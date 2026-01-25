@@ -100,8 +100,8 @@ class GateMonitor:
 
         Returns:
             Dictionary with current gate statistics including:
-                - variance_check_passed: bool (at step 500)
-                - std_collapsed: bool (continuous check)
+                - variance_check_passed: Optional[bool] - None except at step 500
+                - std_collapsed: bool (continuous check after step 100)
         """
         # Compute statistics
         gate_tensor = gate_values.detach().float()
@@ -138,7 +138,7 @@ class GateMonitor:
             if current_variance < expected_min:
                 logger.warning(
                     f"[Step {step}] Gate variance check FAILED: "
-                    f"Expected ≥{expected_min:.6f} (= {self.initial_variance:.6f} × {self.variance_multiplier}), "
+                    f"Expected >={expected_min:.6f} (= {self.initial_variance:.6f} * {self.variance_multiplier}), "
                     f"got {current_variance:.6f}. "
                     f"Gates may be stuck in mushy middle - continuing but monitor closely."
                 )
