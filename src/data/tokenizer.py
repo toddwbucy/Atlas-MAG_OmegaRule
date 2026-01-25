@@ -82,13 +82,15 @@ class BPETokenizer:
         Returns:
             List of token IDs
         """
-        ids = self.tokenizer.encode(text).ids
+        # Disable automatic special tokens since TemplateProcessing adds BOS/EOS
+        # and we handle them manually below based on add_bos/add_eos flags
+        ids = self.tokenizer.encode(text, add_special_tokens=False).ids
 
         result: List[int] = list(ids)
         if add_bos:
-            result = [self.bos_id] + result
+            result = [self.bos_id, *result]
         if add_eos:
-            result = result + [self.eos_id]
+            result = [*result, self.eos_id]
 
         return result
 
