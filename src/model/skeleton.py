@@ -18,7 +18,6 @@ Reference: Atlas paper (arXiv:2505.23735)
 """
 
 import logging
-import math
 from typing import Optional, Tuple
 
 import torch

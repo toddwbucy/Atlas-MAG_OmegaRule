@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.inference.engine import InferenceEngine, InferenceMode
+from src.inference.engine import InferenceEngine
 
 logger = logging.getLogger(__name__)
 

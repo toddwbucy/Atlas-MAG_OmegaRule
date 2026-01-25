@@ -529,8 +529,9 @@ if __name__ == "__main__":
 
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from src.data.tokenizer import load_tokenizer
+    from src.utils.logging import setup_logging
 
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
 
     print("Testing SmolLMDataset...")
 

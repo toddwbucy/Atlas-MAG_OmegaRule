@@ -16,7 +16,7 @@ Reference:
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, Any, Optional, Iterator, Tuple
+from typing import Callable, Dict, Any, Optional, Iterator
 
 import torch
 from torch import Tensor
