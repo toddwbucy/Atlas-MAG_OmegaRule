@@ -76,3 +76,6 @@ Thumbs.db
 .env
 *.key
 credentials.json
+
+# Claude Code workflow preferences (proprietary)
+CLAUDE.md
