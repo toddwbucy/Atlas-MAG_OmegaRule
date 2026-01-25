@@ -116,6 +116,9 @@ class GateMonitor:
             "mean": current_mean,
             "min": gate_tensor.min().item(),
             "max": gate_tensor.max().item(),
+            # Status flags (always present to avoid KeyError)
+            "variance_check_passed": None,  # Set at check_step (500)
+            "std_collapsed": False,  # Updated every step after baseline
         }
 
         # Record baseline at step 100
