@@ -19,6 +19,11 @@ from typing import Tuple
 # Model dimensions
 D: int = 768                      # Model dimension (hidden size)
 N_HEADS: int = 12                 # Number of attention heads
+
+# Fast-fail guard: ensure D is divisible by N_HEADS to avoid silent truncation
+if D % N_HEADS != 0:
+    raise ValueError(f"D ({D}) must be divisible by N_HEADS ({N_HEADS})")
+
 HEAD_DIM: int = D // N_HEADS      # Per-head dimension (64)
 
 # Memory configuration
