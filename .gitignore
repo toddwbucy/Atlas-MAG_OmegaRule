@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+
+# Training outputs (checkpoints, logs)
+runs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Large data files
+data/smollm-corpus/
+*.parquet
+*.arrow
+*.npy
+*.npz
+*.pkl
+*.h5
+*.hdf5
+
+# Keep tokenizer
+!data/tokenizer_smollm.json
+
+# Logs
+*.log
+wandb/
+tensorboard/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.key
+credentials.json
