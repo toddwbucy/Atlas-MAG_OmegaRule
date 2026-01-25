@@ -16,7 +16,7 @@ Note: TNT hierarchical memory is NOT implemented; only Atlas-MAG with Omega Rule
 
 import hashlib
 import logging
-from typing import Optional, Tuple, cast
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn

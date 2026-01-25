@@ -21,7 +21,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Optional, List
 
 import torch
 from torch import nn

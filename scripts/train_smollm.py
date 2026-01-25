@@ -25,7 +25,6 @@ Default runs on GPU 0 with 195M model configuration.
 """
 
 import argparse
-import logging
 import math
 import sys
 import time
@@ -40,21 +39,18 @@ from torch.optim import AdamW
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import VOCAB_SIZE, LAMBDA_INITIAL, LAMBDA_FINAL
-from src.model.skeleton import AtlasMAGSkeleton
-from src.data.tokenizer import load_tokenizer
+from src.config import LAMBDA_FINAL, LAMBDA_INITIAL
 from src.data.smollm_dataset import (
     create_smollm_dataloader,
     create_smollm_val_dataloader,
-    SMOLLM_PATH,
 )
-from src.training.polarization import gate_polarization_loss, compute_gate_statistics
+from src.data.tokenizer import load_tokenizer
+from src.model.skeleton import AtlasMAGSkeleton
+from src.training.polarization import compute_gate_statistics, gate_polarization_loss
+from src.utils.logging import get_logger, setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+# Logger will be configured in main() after parsing args
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -358,6 +354,7 @@ def train(config: TrainingConfig):
                         f"Polar: {polar_loss_for_log:.4f} | "
                         f"PPL: {math.exp(min(lm_loss_for_log, 20)):.2f} | "
                         f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+                        f"GradNorm: {grad_norm:.2f} | "
                         f"Gate std: {gate_std_str} | "
                         f"Tok/s: {tokens_per_sec:.0f}"
                     )
@@ -528,8 +525,13 @@ def main():
     parser.add_argument("--val-every", type=int, default=200, help="Validation frequency")
     parser.add_argument("--save-every", type=int, default=500, help="Checkpoint frequency")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)")
 
     args = parser.parse_args()
+
+    # Setup logging (before any other logging calls)
+    log_file = Path(args.log_file) if args.log_file else Path(args.output_dir) / "train.log"
+    setup_logging(log_file=log_file)
 
     # Parse subset weights
     subset_weights = {"cosmopedia-v2": 0.4, "fineweb-edu-dedup": 0.5, "python-edu-cleaned": 0.1}

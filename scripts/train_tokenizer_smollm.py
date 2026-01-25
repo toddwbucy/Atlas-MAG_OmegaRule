@@ -13,7 +13,6 @@ Usage:
 """
 
 import argparse
-import logging
 import random
 import sys
 import tempfile
@@ -26,11 +25,10 @@ from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, pr
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+from src.utils.logging import setup_logging, get_logger
+
+# Logger will be configured in main()
+logger = get_logger(__name__)
 
 # SmolLM corpus path
 SMOLLM_PATH = Path("/bulk-store/training-datasets/smollm-corpus")
@@ -310,6 +308,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Setup logging
+    setup_logging()
 
     logger.info("=" * 70)
     logger.info("SmolLM-Corpus Tokenizer Training")

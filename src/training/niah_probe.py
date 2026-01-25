@@ -24,7 +24,6 @@ from typing import Optional, Any, List
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
 
 from src.model.qk_projection import QKProjection, create_qk_projection_for_model
 
