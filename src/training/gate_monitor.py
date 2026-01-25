@@ -240,7 +240,11 @@ def check_gate_health(
         )
 
     # Phase-4 polarization target check (PRD: >=20% tokens at <0.1 or >0.9)
-    target = polarization_target or VALIDATION_TARGETS.gate_polarization_ratio
+    target = (
+        VALIDATION_TARGETS.gate_polarization_ratio
+        if polarization_target is None
+        else polarization_target
+    )
     polarization_target_met = polarized_ratio >= target
 
     if not polarization_target_met:
