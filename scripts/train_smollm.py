@@ -185,10 +185,10 @@ def train(config: TrainingConfig):
     tokenizer = load_tokenizer(config.tokenizer_path)
     logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
 
-    # Create model
+    # Create model (use tokenizer's vocab size for consistency)
     logger.info("Creating model...")
     model = AtlasMAGSkeleton(
-        vocab_size=VOCAB_SIZE,
+        vocab_size=tokenizer.vocab_size,
         dim=config.dim,
         n_layers=config.n_layers,
         n_heads=config.n_heads,
@@ -226,11 +226,12 @@ def train(config: TrainingConfig):
     logger.info(f"Initial validation: Loss={init_val['loss']:.4f}, PPL={init_val['ppl']:.2f}")
     logger.info(f"  Validation set: {init_val['num_batches']} batches, {init_val['num_tokens']} tokens")
 
-    # Estimate total steps
+    # Estimate total steps (account for gradient accumulation)
     # SmolLM is ~237M samples, each ~800 tokens average
     est_tokens_total = 200_000_000_000  # 200B tokens rough estimate
     est_seqs = est_tokens_total // config.seq_len
-    est_steps_per_epoch = est_seqs // config.batch_size
+    effective_batch = config.batch_size * config.gradient_accumulation_steps
+    est_steps_per_epoch = est_seqs // effective_batch
     est_steps = est_steps_per_epoch * config.epochs
 
     if config.max_steps:
@@ -294,7 +295,10 @@ def train(config: TrainingConfig):
             polar_loss_value = 0.0
 
             if config.use_polarization and not config.disable_memory:
-                gates = torch.tensor(model.get_gate_values(), device=config.device)
+                # Get gate parameters directly to preserve gradients
+                # (model.get_gate_values() returns detached floats, not grad-connected tensors)
+                gate_params = model.get_gate_params()  # Returns list of nn.Parameters
+                gates = torch.sigmoid(torch.stack(gate_params))
                 polar_loss = gate_polarization_loss(gates, global_step, est_steps)
                 total_loss = (lm_loss + polar_loss) / accum_steps
                 polar_loss_value = polar_loss.item()
@@ -508,7 +512,12 @@ def main():
         default="data/tokenizer_smollm.json",
         help="Path to tokenizer",
     )
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device (cuda/cpu), auto-detects if not specified",
+    )
     parser.add_argument("--no-polarization", action="store_true", help="Disable gate polarization")
     parser.add_argument(
         "--disable-memory",
