@@ -192,13 +192,6 @@ class Phase2Trainer:
 
         # Compute statistics
         gate_stats = compute_gate_statistics(gate_values)
-        perplexity = torch.exp(lm_loss).item()
-
-        # PPL delta tracking (via telemetry)
-        ppl_delta = None
-        is_spike = False
-        if hasattr(self.telemetry, "ppl_tracker"):
-            ppl_delta, is_spike = self.telemetry.ppl_tracker.update(perplexity)
 
         # NIAH probe (if scheduled)
         niah_accuracy = None
@@ -210,8 +203,8 @@ class Phase2Trainer:
                 )
                 niah_accuracy = niah_result.accuracy
 
-        # Telemetry logging
-        self.telemetry.log_step(
+        # Telemetry logging (ppl_tracker.update is called internally)
+        step_metrics = self.telemetry.log_step(
             step=step,
             lm_loss=lm_loss.item(),
             polar_loss=polar_loss.item(),
@@ -222,6 +215,11 @@ class Phase2Trainer:
             learning_rate=self.optimizer.param_groups[0]["lr"],
             niah_accuracy=niah_accuracy,
         )
+
+        # Get PPL info from step_metrics (computed once in telemetry)
+        perplexity = step_metrics.perplexity
+        ppl_delta = step_metrics.ppl_delta
+        is_spike = step_metrics.is_spike
 
         # Checkpointing
         if self.checkpoint_manager.should_save(step):
@@ -386,10 +384,11 @@ class Phase2Trainer:
             niah_stats.get("pass_rate", 0) >= 0.8
         )
 
-        # AC-P2-6: Rollback tested (checked separately)
+        # AC-P2-6: Rollback tested
+        # Only passes if rollback was actually triggered during training.
+        # If no natural rollback occurred, run verify_rollback_trigger() separately.
         results["AC-P2-6_rollback_tested"] = (
-            self.checkpoint_manager.rollback_count > 0 or
-            len(self.checkpoint_manager.checkpoints) > 0
+            self.checkpoint_manager.rollback_count > 0
         )
 
         # AC-P2-7: PPL delta visible in telemetry
