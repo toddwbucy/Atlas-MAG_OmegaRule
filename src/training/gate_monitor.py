@@ -18,7 +18,7 @@ from typing import Optional
 
 from torch import Tensor
 
-from src.config import FAST_FAIL
+from src.config import FAST_FAIL, VALIDATION_TARGETS
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,7 @@ def check_gate_health(
     gate_values: Tensor,
     step: int,
     warn_threshold: float = 0.3,
+    polarization_target: float | None = None,
 ) -> dict:
     """
     Quick health check for gate values (non-fatal).
@@ -210,9 +211,14 @@ def check_gate_health(
         gate_values: Tensor of gate values
         step: Current step (for logging)
         warn_threshold: Threshold for warning about indecisive gates
+        polarization_target: Phase-4 target for polarized ratio (default: from config)
 
     Returns:
-        Dictionary with health status and diagnostics
+        Dictionary with health status and diagnostics including:
+            - healthy: bool (indecisive_ratio < warn_threshold)
+            - polarization_target_met: bool (polarized_ratio >= target, Phase-4 criterion)
+            - polarized_ratio: float
+            - indecisive_ratio: float
     """
     values = gate_values.detach().float()
 
@@ -233,8 +239,20 @@ def check_gate_health(
             f"{indecisive_ratio:.1%} of gates in (0.4, 0.6)"
         )
 
+    # Phase-4 polarization target check (PRD: >=20% tokens at <0.1 or >0.9)
+    target = polarization_target or VALIDATION_TARGETS.gate_polarization_ratio
+    polarization_target_met = polarized_ratio >= target
+
+    if not polarization_target_met:
+        logger.debug(
+            f"[Step {step}] Polarization target not yet met: "
+            f"{polarized_ratio:.1%} < {target:.1%} (Phase-4 criterion)"
+        )
+
     return {
         "healthy": healthy,
+        "polarization_target_met": polarization_target_met,
+        "polarization_target": target,
         "polarized_ratio": polarized_ratio,
         "indecisive_ratio": indecisive_ratio,
         "polarized_low": polarized_low,
