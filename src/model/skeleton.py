@@ -51,6 +51,13 @@ class GammaGate(nn.Module):
     """
 
     def __init__(self, dim: int, hidden_dim: int = GAMMA_GATE_HIDDEN_DIM):
+        """
+        Initialize gamma gate module.
+
+        Args:
+            dim: Input dimension
+            hidden_dim: Hidden layer dimension for the gate MLP
+        """
         super().__init__()
         self.gate = nn.Sequential(
             nn.Linear(dim, hidden_dim, bias=False),
@@ -495,6 +502,7 @@ class AtlasMAGSkeleton(nn.Module):
         }
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         params = self.count_parameters()
         return (
             f"vocab_size={self.vocab_size}, dim={self.dim}, "

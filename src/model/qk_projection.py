@@ -483,8 +483,9 @@ class CausalQKMemoryProjection(nn.Module):
         Returns:
             Tensor of shape (chunk_len, max_context_len) with causal decay weights
         """
-        chunk_len = chunk_end - chunk_start
-        max_context_len = chunk_end - context_start  # Maximum possible context
+        # Note: chunk_len and max_context_len are implicit in the tensor shapes
+        # chunk_len = chunk_end - chunk_start
+        # max_context_len = chunk_end - context_start
 
         # Create position indices
         # t_indices[i] = chunk_start + i (positions being queried)

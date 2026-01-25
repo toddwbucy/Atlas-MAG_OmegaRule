@@ -10,12 +10,12 @@ from src.model.projections import QKVProjection, CausalConv1d
 from src.model.skeleton import AtlasMAGSkeleton
 
 __all__ = [
+    "AtlasMAGSkeleton",
     "AtlasMemory",
     "AtlasMemoryPoly",
+    "CausalConv1d",
     "PersistentMemory",
+    "QKVProjection",
     "compute_m_persistent",
     "compute_norm_persistent",
-    "QKVProjection",
-    "CausalConv1d",
-    "AtlasMAGSkeleton",
 ]

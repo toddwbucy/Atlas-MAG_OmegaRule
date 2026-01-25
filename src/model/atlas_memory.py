@@ -49,6 +49,14 @@ class AtlasMemory(nn.Module):
         expansion: int = MEMORY_EXPANSION,
         bias: bool = False,
     ):
+        """
+        Initialize Atlas memory module.
+
+        Args:
+            dim: Model dimension
+            expansion: Hidden dimension multiplier for the gated MLP
+            bias: Whether to use bias in linear layers
+        """
         super().__init__()
         self.dim = dim
         self.hidden_dim = dim * expansion
@@ -90,6 +98,7 @@ class AtlasMemory(nn.Module):
         return out
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, hidden_dim={self.hidden_dim}"
 
 
@@ -120,6 +129,15 @@ class AtlasMemoryPoly(nn.Module):
         poly_degree: int = POLY_DEGREE,
         bias: bool = False,
     ):
+        """
+        Initialize polynomial-enhanced Atlas memory module.
+
+        Args:
+            dim: Model dimension
+            expansion: Hidden dimension multiplier
+            poly_degree: Polynomial degree for feature expansion (only 2 supported)
+            bias: Whether to use bias in linear layers
+        """
         super().__init__()
         self.dim = dim
         self.poly_degree = poly_degree
@@ -200,6 +218,7 @@ class AtlasMemoryPoly(nn.Module):
         return out
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return (
             f"dim={self.dim}, poly_dim={self.poly_dim}, "
             f"hidden_dim={self.hidden_dim}, poly_degree={self.poly_degree}"

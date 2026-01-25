@@ -42,6 +42,11 @@ class QKVProjection(nn.Module):
         bias: bool = False,
     ):
         super().__init__()
+        # Validate dim is divisible by n_heads to prevent cryptic .view() errors
+        if dim % n_heads != 0:
+            raise ValueError(
+                f"dim must be divisible by n_heads: got dim={dim}, n_heads={n_heads}"
+            )
         self.dim = dim
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
@@ -116,6 +121,7 @@ class QKVProjection(nn.Module):
         return q, k, v
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, n_heads={self.n_heads}, qk_norm={self.qk_norm}"
 
 
@@ -186,6 +192,7 @@ class CausalConv1d(nn.Module):
         return x.transpose(1, 2)
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, kernel_size={self.kernel_size}, groups={self.groups}"
 
 
@@ -279,8 +286,14 @@ class RotaryEmbedding(nn.Module):
 
     def _apply_rotary(self, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         """Apply rotary embedding to a single tensor."""
-        # Split into even and odd dimensions
-        x1, x2 = x[..., : self.dim // 2], x[..., self.dim // 2 :]
+        # Handle the case where head_dim > self.dim (only rotate first self.dim dims)
+        # Split into rotated part and unchanged tail
+        rotated_part = x[..., : self.dim]
+        tail = x[..., self.dim :]  # May be empty if head_dim == self.dim
+
+        # Split rotated part into even and odd dimensions
+        half_dim = self.dim // 2
+        x1, x2 = rotated_part[..., :half_dim], rotated_part[..., half_dim:]
 
         # Rotate
         # cos and sin have shape (seq_len, dim)
@@ -288,15 +301,21 @@ class RotaryEmbedding(nn.Module):
         cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, dim)
         sin = sin.unsqueeze(0).unsqueeze(0)
 
-        # Handle the case where dim < head_dim (only rotate part of the vector)
-        cos1, cos2 = cos[..., : self.dim // 2], cos[..., self.dim // 2 :]
-        sin1, sin2 = sin[..., : self.dim // 2], sin[..., self.dim // 2 :]
+        # Split cos/sin for the two halves
+        cos1, cos2 = cos[..., :half_dim], cos[..., half_dim:self.dim]
+        sin1, sin2 = sin[..., :half_dim], sin[..., half_dim:self.dim]
 
         # Apply rotation: [x1, x2] * [cos, -sin; sin, cos]
-        return torch.cat(
+        rotated = torch.cat(
             [x1 * cos1 - x2 * sin1, x1 * sin2 + x2 * cos2],
             dim=-1,
         )
 
+        # Concatenate with unchanged tail (if any)
+        if tail.size(-1) > 0:
+            return torch.cat([rotated, tail], dim=-1)
+        return rotated
+
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, max_seq_len={self.max_seq_len}, base={self.base}"
