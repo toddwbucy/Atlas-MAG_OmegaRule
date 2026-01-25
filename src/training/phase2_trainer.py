@@ -300,7 +300,7 @@ class Phase2Trainer:
                 input_ids = batch.to(device) if hasattr(batch, "to") else batch
 
                 try:
-                    result = self.train_step(input_ids, step)
+                    self.train_step(input_ids, step)
                     step += 1
                 except FastFailError as e:
                     logger.error(f"Fast-fail triggered: {e}")
@@ -346,7 +346,6 @@ class Phase2Trainer:
             return {"completed_steps": 0}
 
         losses = [r.total_loss for r in self.results]
-        niah_results = [r for r in self.results if r.niah_accuracy is not None]
         rollbacks = [r for r in self.results if r.rollback_triggered]
         spikes = [r for r in self.results if r.is_spike]
 

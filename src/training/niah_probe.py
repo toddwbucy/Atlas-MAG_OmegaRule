@@ -260,7 +260,7 @@ class NIAHProbe:
 def measure_niah_overhead(
     model: Any,
     num_steps: int = 100,
-    probe_frequencies: List[int] = [500, 1000, 2000],
+    probe_frequencies: Optional[List[int]] = None,
     device: str = "cpu",
 ) -> dict:
     """
@@ -278,14 +278,17 @@ def measure_niah_overhead(
     Returns:
         Dictionary with timing measurements for each frequency
     """
+    if probe_frequencies is None:
+        probe_frequencies = [500, 1000, 2000]
+
     dim = model.dim if hasattr(model, "dim") else 768
     results = {}
 
     # Baseline (no probes)
     start = time.perf_counter()
     for _ in range(num_steps):
-        # Simulate forward pass
-        x = torch.randn(4, 64, dim, device=device)
+        # Simulate forward pass (tensor created for potential future use)
+        _x = torch.randn(4, 64, dim, device=device)
         if hasattr(model, "forward"):
             with torch.no_grad():
                 _ = model(torch.randint(0, 1000, (4, 64), device=device))
@@ -302,7 +305,7 @@ def measure_niah_overhead(
 
         start = time.perf_counter()
         for step in range(num_steps):
-            x = torch.randn(4, 64, dim, device=device)
+            _x = torch.randn(4, 64, dim, device=device)
             if hasattr(model, "forward"):
                 with torch.no_grad():
                     _ = model(torch.randint(0, 1000, (4, 64), device=device))
