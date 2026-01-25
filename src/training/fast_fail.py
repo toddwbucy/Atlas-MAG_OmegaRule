@@ -90,15 +90,18 @@ class GateMonitor:
         """
         Check gate statistics against fast-fail conditions.
 
+        NOTE: Research-grade implementation - logs warnings but does NOT abort.
+        Check returned stats for 'variance_check_passed' and 'std_collapsed'
+        flags if you need to take action programmatically.
+
         Args:
             gate_values: Tensor of gate values from model
             step: Current training step
 
         Returns:
-            Dictionary with current gate statistics
-
-        Raises:
-            FastFailError: If any fast-fail condition is met
+            Dictionary with current gate statistics including:
+                - variance_check_passed: bool (at step 500)
+                - std_collapsed: bool (continuous check)
         """
         # Compute statistics
         gate_tensor = gate_values.detach().float()
@@ -126,39 +129,34 @@ class GateMonitor:
             )
 
         # Check 1: Variance increase at step 500
+        # NOTE: Research-grade - log warnings, don't abort (per PRD philosophy)
         if step == self.check_step and self.initial_variance is not None:
             expected_min = self.initial_variance * self.variance_multiplier
             if current_variance < expected_min:
-                raise FastFailError(
-                    f"Gate variance not increasing! "
+                logger.warning(
+                    f"[Step {step}] Gate variance check FAILED: "
                     f"Expected ≥{expected_min:.6f} (= {self.initial_variance:.6f} × {self.variance_multiplier}), "
                     f"got {current_variance:.6f}. "
-                    f"ABORTING - architecture stuck in mushy middle.",
-                    step=step,
-                    details={
-                        "initial_variance": self.initial_variance,
-                        "current_variance": current_variance,
-                        "expected_multiplier": self.variance_multiplier,
-                    },
+                    f"Gates may be stuck in mushy middle - continuing but monitor closely."
                 )
+                stats["variance_check_passed"] = False
             else:
                 logger.info(
                     f"[Step {step}] Gate variance check PASSED: "
                     f"{current_variance:.6f} ≥ {expected_min:.6f}"
                 )
+                stats["variance_check_passed"] = True
 
         # Check 2: Continuous std check after step 100
+        # NOTE: Research-grade - log warnings, don't abort (per PRD philosophy)
         if step > self.baseline_step and current_std < self.std_min:
-            raise FastFailError(
-                f"Gate std collapsed to {current_std:.6f} < {self.std_min}. "
-                f"All gates converged to same value - killing run.",
-                step=step,
-                details={
-                    "std": current_std,
-                    "threshold": self.std_min,
-                    "mean": current_mean,
-                },
+            logger.warning(
+                f"[Step {step}] Gate std collapsed to {current_std:.6f} < {self.std_min}. "
+                f"All gates converging to same value - continuing but investigate."
             )
+            stats["std_collapsed"] = True
+        else:
+            stats["std_collapsed"] = False
 
         # Store in history (keep last 100 entries)
         self.history.append(stats)

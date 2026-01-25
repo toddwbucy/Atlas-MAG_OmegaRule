@@ -39,15 +39,15 @@ from torch.optim import AdamW
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import LAMBDA_INITIAL, LAMBDA_FINAL
-from src.model.skeleton import AtlasMAGSkeleton
-from src.data.tokenizer import load_tokenizer
+from src.config import LAMBDA_FINAL, LAMBDA_INITIAL
 from src.data.smollm_dataset import (
     create_smollm_dataloader,
     create_smollm_val_dataloader,
 )
-from src.training.polarization import gate_polarization_loss, compute_gate_statistics
-from src.utils.logging import setup_logging, get_logger
+from src.data.tokenizer import load_tokenizer
+from src.model.skeleton import AtlasMAGSkeleton
+from src.training.polarization import compute_gate_statistics, gate_polarization_loss
+from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
 logger = get_logger(__name__)
@@ -525,7 +525,7 @@ def main():
     parser.add_argument("--val-every", type=int, default=200, help="Validation frequency")
     parser.add_argument("--save-every", type=int, default=500, help="Checkpoint frequency")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
-    parser.add_argument("--log-file", type=str, default=None, help="Log file path (logs to stdout only if not specified)")
+    parser.add_argument("--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)")
 
     args = parser.parse_args()
 
