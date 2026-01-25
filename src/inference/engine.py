@@ -14,9 +14,10 @@ Key Insight:
 
 import logging
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Tuple, List
+from typing import Deque, Optional, Tuple, List
 
 import torch
 import torch.nn as nn
@@ -45,7 +46,7 @@ class InferenceState:
     # Local memory state (sliding window during decode)
     m_local: Optional[Tensor] = None
     norm_local: float = 0.0
-    local_keys: Optional[List[Tensor]] = None
+    local_keys: Optional[Deque[Tensor]] = None
 
     # KV cache for attention
     kv_cache: Optional[Tuple[Tensor, Tensor]] = None
@@ -208,8 +209,8 @@ class InferenceEngine:
         self.state.m_global = torch.zeros(self.dim, self.dim, device=self.device)
         self.state.norm_global = 1.0  # Avoid division by zero
 
-        # Initialize local memory state
-        self.state.local_keys = []
+        # Initialize local memory state with deque for O(1) sliding window
+        self.state.local_keys = deque(maxlen=self.local_window_size)
         self.state.m_local = torch.zeros(self.dim, self.dim, device=self.device)
         self.state.norm_local = 0.0
 
@@ -217,26 +218,28 @@ class InferenceEngine:
         """
         Update sliding local memory during decode.
 
-        Maintains window of last `local_window_size` keys.
-        When window full, removes oldest key.
+        Maintains window of last `local_window_size` keys using deque
+        for O(1) eviction (vs O(n) for list.pop(0)).
         """
         if self.state.local_keys is None:
-            self.state.local_keys = []
+            self.state.local_keys = deque(maxlen=self.local_window_size)
 
         # Simplified: Would extract actual key from attention
         # For now, create placeholder
         new_key = torch.randn(self.dim, device=self.device)
 
-        # Add to sliding window
+        # Check if we'll evict an old key (deque at maxlen)
+        old_key = None
+        if len(self.state.local_keys) == self.local_window_size:
+            old_key = self.state.local_keys[0]  # Will be evicted on append
+
+        # Add to sliding window (deque auto-evicts oldest if at maxlen)
         self.state.local_keys.append(new_key)
 
-        # Maintain window size
-        if len(self.state.local_keys) > self.local_window_size:
-            # Remove oldest key
-            old_key = self.state.local_keys.pop(0)
-
-            # Update M_local (remove old, add new)
-            if self.state.m_local is not None:
+        # Update M_local
+        if self.state.m_local is not None:
+            if old_key is not None:
+                # Remove old key contribution, add new
                 self.state.m_local = (
                     self.state.m_local
                     - torch.outer(old_key, old_key)
@@ -247,9 +250,8 @@ class InferenceEngine:
                     - old_key.norm().item() ** 2
                     + new_key.norm().item() ** 2
                 )
-        else:
-            # Window not full yet, just add
-            if self.state.m_local is not None:
+            else:
+                # Window not full yet, just add
                 self.state.m_local = self.state.m_local + torch.outer(new_key, new_key)
                 self.state.norm_local = self.state.norm_local + new_key.norm().item() ** 2
 
@@ -272,10 +274,12 @@ class InferenceEngine:
             stats["total_decode_ms"] = sum(self.decode_times_ms)
 
         stats["total_ms"] = self.prefill_time_ms + sum(self.decode_times_ms)
-        stats["tokens_per_second"] = (
-            len(self.decode_times_ms) / (stats["total_decode_ms"] / 1000)
-            if self.decode_times_ms else 0
-        )
+        # Avoid division by zero: check total_decode_ms > 0, not just list non-empty
+        total_decode_ms = stats.get("total_decode_ms", 0)
+        if total_decode_ms > 0:
+            stats["tokens_per_second"] = len(self.decode_times_ms) / (total_decode_ms / 1000)
+        else:
+            stats["tokens_per_second"] = 0.0
 
         return stats
 

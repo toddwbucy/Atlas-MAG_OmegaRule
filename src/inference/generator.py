@@ -92,7 +92,7 @@ class TextGenerator:
         generated_ids = list(input_ids)
 
         # Generate tokens one at a time
-        for step in range(config.max_new_tokens):
+        for _ in range(config.max_new_tokens):
             # Apply repetition penalty
             if config.repetition_penalty != 1.0:
                 next_token_logits = self._apply_repetition_penalty(
@@ -155,13 +155,18 @@ class TextGenerator:
             # Greedy decoding
             return logits.argmax(dim=-1).item()
 
+        # Clone logits to avoid mutating caller's tensor
+        logits = logits.clone()
+        vocab_size = logits.size(-1)
+
         # Apply temperature
         if temperature != 1.0:
             logits = logits / temperature
 
-        # Apply top-k filtering
+        # Apply top-k filtering (clamp k to valid range)
         if top_k > 0:
-            indices_to_remove = logits < torch.topk(logits, top_k)[0][-1]
+            k = max(1, min(top_k, vocab_size))
+            indices_to_remove = logits < torch.topk(logits, k)[0][-1]
             logits[indices_to_remove] = float('-inf')
 
         # Apply top-p (nucleus) filtering
