@@ -48,7 +48,9 @@ def generate(model, tokenizer, prompt: str, max_tokens: int = 100,
 
     for _ in range(max_tokens):
         # Get logits for last position
-        with torch.amp.autocast('cuda'):
+        # Determine device type for autocast (cuda vs cpu)
+        device_type = "cuda" if "cuda" in device else "cpu"
+        with torch.amp.autocast(device_type):
             logits = model(input_ids)
 
         next_token_logits = logits[0, -1, :] / temperature
@@ -65,8 +67,9 @@ def generate(model, tokenizer, prompt: str, max_tokens: int = 100,
         generated.append(next_token.item())
         input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
 
-        # Stop on EOS (token 0 for many tokenizers)
-        if next_token.item() == 0:
+        # Stop on EOS (get from tokenizer, default to 3 for our BPE tokenizer)
+        eos_id = getattr(tokenizer, 'eos_id', 3)
+        if next_token.item() == eos_id:
             break
 
     return tokenizer.decode(generated)

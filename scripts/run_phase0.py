@@ -200,8 +200,8 @@ def run_phase0_diagnostics(
             if dist.is_initialized():
                 world_size = dist.get_world_size()
                 rank = dist.get_rank()
-        except:
-            pass
+        except (ImportError, RuntimeError):
+            pass  # Not in distributed mode
 
         verified = verify_m_persistent_consistency(
             model.persistent_memory.m_persistent,

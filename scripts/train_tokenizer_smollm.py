@@ -343,7 +343,11 @@ def main():
         if args.keep_corpus:
             corpus_path = Path("data/smollm_corpus_sample.txt")
         else:
-            corpus_path = Path(tempfile.mktemp(suffix=".txt"))
+            # Use mkstemp instead of deprecated mktemp (S306)
+            fd, temp_path = tempfile.mkstemp(suffix=".txt")
+            import os
+            os.close(fd)  # Close file descriptor, we'll write via Path
+            corpus_path = Path(temp_path)
 
         sample_corpus_for_tokenizer(corpus_path, args.target_chars, args.seed)
 
