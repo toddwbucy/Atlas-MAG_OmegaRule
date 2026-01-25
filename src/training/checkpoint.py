@@ -309,18 +309,16 @@ class CheckpointManager:
 def verify_rollback_trigger(
     model: nn.Module,
     optimizer: Optimizer,
-    output_dir: Path,
 ) -> bool:
     """
     Test that rollback works correctly (for AC-P2-6).
 
-    Creates a checkpoint, modifies the model, then rolls back
-    and verifies the model was restored.
+    Creates a checkpoint in a temp directory, modifies the model,
+    then rolls back and verifies the model was restored.
 
     Args:
         model: Model to test
         optimizer: Optimizer to test
-        output_dir: Directory for test checkpoints
 
     Returns:
         True if rollback test passes

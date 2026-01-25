@@ -132,8 +132,8 @@ class Muon(Optimizer):
                 if weight_decay != 0:
                     grad = grad.add(p, alpha=weight_decay)
 
-                # Orthogonalize 2D gradients (weight matrices)
-                if grad.ndim == 2 and (not orthogonalize_2d_only or grad.ndim == 2):
+                # Orthogonalize gradients (2D only if flag set, otherwise all)
+                if grad.ndim == 2 or not orthogonalize_2d_only:
                     grad = newton_schulz(grad, num_iters=k)
 
                 # Get or create state

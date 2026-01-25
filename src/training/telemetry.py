@@ -184,6 +184,9 @@ class TelemetryLogger:
         # Accumulated metrics (in memory)
         self.all_metrics: List[StepMetrics] = []
 
+        # Track how many metrics have been written to avoid duplicates in flush
+        self._written_count = 0
+
         # Tracking
         self.start_time = datetime.now()
 
@@ -252,6 +255,7 @@ class TelemetryLogger:
         # Write to file periodically
         if step % self.log_frequency == 0:
             self._write_metrics(metrics)
+            self._written_count = len(self.all_metrics)
 
         return metrics
 
@@ -290,10 +294,10 @@ class TelemetryLogger:
 
     def flush(self) -> None:
         """Flush remaining metrics to file."""
-        # Write last few unwritten metrics
-        last_written = (len(self.all_metrics) // self.log_frequency) * self.log_frequency
-        for metrics in self.all_metrics[last_written:]:
+        # Write unwritten metrics (those after _written_count)
+        for metrics in self.all_metrics[self._written_count:]:
             self._write_metrics(metrics)
+        self._written_count = len(self.all_metrics)
 
     def check_ppl_delta_visible(self) -> bool:
         """

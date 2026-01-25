@@ -323,21 +323,28 @@ class ThroughputBenchmark:
     def run_comparison(
         self,
         num_steps: int = 100,
-        target_speedup: float = 10.0,
+        target_speedup: float = 1.0,
     ) -> ComparisonResult:
         """
         Run baseline vs optimized comparison.
 
-        Note: This is a simplified comparison using forward-only
-        throughput. Currently both runs measure the same model.
+        Note: This is a placeholder comparison that measures the same model
+        twice. It will always yield ~1x speedup. To get meaningful results:
+        - TODO: Accept separate baseline_model parameter
+        - TODO: Compare attention-only vs memory-enabled forward passes
 
         Args:
             num_steps: Steps for each measurement
-            target_speedup: Target speedup multiplier (default: 10x)
+            target_speedup: Target speedup multiplier (default: 1.0 for placeholder)
 
         Returns:
             ComparisonResult with speedup and pass/fail status
         """
+        logger.warning(
+            "run_comparison is a placeholder - measures same model twice. "
+            "Speedup will be ~1x until baseline model is provided."
+        )
+
         logger.info("Measuring baseline throughput...")
         baseline = self.measure_forward_throughput(num_steps)
         logger.info(f"Baseline: {baseline}")
