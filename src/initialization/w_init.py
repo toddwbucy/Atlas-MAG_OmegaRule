@@ -107,9 +107,9 @@ def compute_steady_state_init(
                     w_init = memory_state.mean(dim=0) if memory_state.ndim > 1 else memory_state
                 else:
                     current = memory_state.mean(dim=0) if memory_state.ndim > 1 else memory_state
-                    # Reduce to (dim,) if needed
+                    # Reduce to (dim,) if needed - flatten first for safe slicing
                     if current.numel() > dim:
-                        current = current[:int(dim)]
+                        current = current.flatten()[:int(dim)]
                     w_init = momentum * w_init + (1 - momentum) * current
                 n_updates += 1
             else:
@@ -123,9 +123,9 @@ def compute_steady_state_init(
         all_states_tensor = torch.cat(all_states, dim=0)
         w_init = all_states_tensor.mean(dim=0).to(device)
 
-    # Reduce to correct dimension if needed
+    # Reduce to correct dimension if needed - flatten first for safe slicing
     if w_init.numel() > dim:
-        w_init = w_init[:int(dim)]
+        w_init = w_init.flatten()[:int(dim)]
 
     logger.info(
         f"W_init computed: shape={w_init.shape}, "
@@ -202,6 +202,11 @@ def measure_reset_shock(
     # Restore original W_init
     w_init_param.data = original_w_init
 
+    # Guard against empty batch lists
+    if not losses_with_init or not losses_without_init:
+        logger.warning("No batches processed for reset shock measurement")
+        return {"shock_ratio": 0.0, "passes": True, "avg_with": 0.0, "avg_without": 0.0}
+
     # Compute averages
     avg_with = sum(losses_with_init) / len(losses_with_init)
     avg_without = sum(losses_without_init) / len(losses_without_init)
@@ -270,8 +275,17 @@ def calibrate_with_increasing_tokens(
 
     Returns:
         Calibrated W_init tensor
+
+    Raises:
+        ValueError: If initial_tokens > max_tokens (loop would never execute)
     """
+    if initial_tokens > max_tokens:
+        raise ValueError(
+            f"initial_tokens ({initial_tokens}) must be <= max_tokens ({max_tokens})"
+        )
+
     num_tokens = initial_tokens
+    w_init: Optional[Tensor] = None
 
     while num_tokens <= max_tokens:
         logger.info(f"Attempting calibration with {num_tokens} tokens...")
@@ -303,4 +317,6 @@ def calibrate_with_increasing_tokens(
         f"Failed to achieve < {RESET_SHOCK_THRESHOLD:.0%} shock "
         f"even with {max_tokens} tokens!"
     )
+    # w_init is guaranteed to be set (guard ensures loop runs at least once)
+    assert w_init is not None, "w_init should be set after loop"
     return w_init  # Return best effort

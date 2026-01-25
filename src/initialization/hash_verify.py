@@ -13,7 +13,7 @@ Reference: TNT paper (arXiv:2511.07343)
 
 import hashlib
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -31,8 +31,8 @@ def compute_tensor_hash(tensor: Tensor) -> str:
     Returns:
         SHA-256 hash as hex string (64 characters)
     """
-    # Ensure deterministic byte representation
-    data = tensor.detach().cpu().contiguous().float().numpy().tobytes()
+    # Ensure deterministic byte representation (preserve original dtype for precision)
+    data = tensor.detach().cpu().contiguous().numpy().tobytes()
     return hashlib.sha256(data).hexdigest()
 
 
@@ -223,7 +223,7 @@ class ConsistencyMonitor:
         self.rank = rank
         self.check_interval = check_interval
         self.step = 0
-        self.history: List[tuple[int, dict]] = []
+        self.history: List[Tuple[int, Dict[str, bool]]] = []
 
     def step_check(self) -> Optional[dict]:
         """
