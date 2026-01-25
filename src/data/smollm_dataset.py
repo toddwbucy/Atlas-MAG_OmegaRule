@@ -86,6 +86,9 @@ def discover_subsets(
     Returns:
         List of SubsetInfo objects
     """
+    # Normalize to Path to avoid TypeError when callers pass string
+    base_path = Path(base_path)
+
     if subsets is None:
         subsets = list(SUBSET_CONFIGS.keys())
 

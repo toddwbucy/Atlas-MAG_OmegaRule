@@ -205,7 +205,7 @@ def create_calibration_loader(
                 seq_len=seq_len,
                 max_tokens=num_tokens,
             )
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             logger.warning(f"Failed to load WikiText-2: {e}")
             logger.warning("Falling back to random data")
             use_wikitext = False
@@ -217,6 +217,13 @@ def create_calibration_loader(
             vocab_size=32000,
             seq_len=seq_len,
             num_samples=num_samples,
+        )
+
+    # Guard against empty datasets - DataLoader crashes with batch_size=0
+    if len(dataset) == 0:
+        raise ValueError(
+            "Calibration dataset is empty. "
+            "Ensure num_tokens >= seq_len and input texts are non-empty."
         )
 
     # Adjust batch size if dataset is too small
