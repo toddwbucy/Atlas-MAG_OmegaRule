@@ -1,14 +1,15 @@
 """
-Fast-Fail Gate Monitoring for Phase 1 Architecture Validation.
+Gate Health Monitoring for Phase 1 Architecture Validation.
 
-Implements early abort conditions to detect broken training runs.
-From PRD: "The system needs to scream 'I'm broken' immediately"
+Implements non-fatal gate-health checks and warning logs to detect broken runs.
+From PRD: "The system needs to scream 'I'm broken' immediately" (via warnings)
 
-Fast-fail checks:
+Gate health checks:
     1. Step 100: Record initial gate variance (baseline)
-    2. Step 500: Verify variance increased ≥1.5× (gates are learning)
-    3. Continuous: Abort if gate std < 0.01 (collapsed to single value)
+    2. Step 500: Verify variance increased >=1.5x (gates are learning)
+    3. Continuous: Warn if gate std < 0.01 (collapsed to single value)
 
+Note: Research-grade implementation - logs warnings but does NOT abort.
 Reference: PRD Section "Fast-Fail Checks"
 """
 
