@@ -205,7 +205,7 @@ def measure_reset_shock(
     # Guard against empty batch lists
     if not losses_with_init or not losses_without_init:
         logger.warning("No batches processed for reset shock measurement")
-        return {"shock_ratio": 0.0, "passes": True, "avg_with": 0.0, "avg_without": 0.0}
+        return 0.0, 0.0, 0.0  # shock_ratio, avg_with, avg_without
 
     # Compute averages
     avg_with = sum(losses_with_init) / len(losses_with_init)
