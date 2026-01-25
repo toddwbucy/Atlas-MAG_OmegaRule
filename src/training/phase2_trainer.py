@@ -292,7 +292,7 @@ class Phase2Trainer:
                 try:
                     batch = next(data_iterator)
                 except StopIteration:
-                    logger.warning("Data iterator exhausted, creating new one")
+                    logger.warning("Data iterator exhausted; stopping training early")
                     break
 
                 input_ids = batch.to(device) if hasattr(batch, "to") else batch
@@ -300,8 +300,8 @@ class Phase2Trainer:
                 try:
                     self.train_step(input_ids, step)
                     step += 1
-                except FastFailError as e:
-                    logger.error(f"Fast-fail triggered: {e}")
+                except FastFailError:
+                    logger.exception("Fast-fail triggered")
                     break
 
         except KeyboardInterrupt:
