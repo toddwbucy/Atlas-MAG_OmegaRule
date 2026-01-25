@@ -214,7 +214,7 @@ class PersistentMemory(nn.Module):
                 - M_accumulated: M_persistent + cumulative key outer products
                 - norm_accumulated: norm_persistent + cumulative key norms
         """
-        batch, seq_len, dim = keys.shape
+        batch, _seq_len, _dim = keys.shape
         device = keys.device
         dtype = keys.dtype
 
@@ -261,6 +261,12 @@ def broadcast_persistent_memory(
     if world_size == 1:
         # Single GPU mode - no broadcast needed
         return persistent_memory.get_hash()
+
+    # Guard against uninitialized distributed backend
+    if not dist.is_available() or not dist.is_initialized():
+        raise RuntimeError(
+            "torch.distributed is not initialized; call init_process_group() first"
+        )
 
     # Broadcast M_persistent tensor
     if rank == 0:
