@@ -57,10 +57,10 @@ class FastFailError(Exception):
 
 class GateMonitor:
     """
-    Monitor gate variance trajectory for fast-fail detection.
+    Monitor gate variance trajectory for training health.
 
-    The monitor tracks gate statistics and raises FastFailError if:
-    1. Gate variance at step 500 < 1.5 × variance at step 100
+    The monitor tracks gate statistics and logs warnings if:
+    1. Gate variance at step 500 < 1.5 * variance at step 100
     2. Gate std drops below 0.01 at any point after step 100
 
     These conditions indicate the gates aren't learning to route,
@@ -70,10 +70,14 @@ class GateMonitor:
         >>> monitor = GateMonitor()
         >>> for step in range(1000):
         ...     gate_values = model.get_gate_values()
-        ...     monitor.check(torch.tensor(gate_values), step)
+        ...     stats = monitor.check(torch.tensor(gate_values), step)
+        ...     if stats.get("std_collapsed"):
+        ...         # Handle collapsed gates (optional)
+        ...         pass
 
-    Raises:
-        FastFailError: If any fast-fail condition is triggered
+    Note:
+        Research-grade implementation - logs warnings but does NOT abort.
+        Check returned stats for 'variance_check_passed' and 'std_collapsed'.
     """
 
     def __init__(self):
