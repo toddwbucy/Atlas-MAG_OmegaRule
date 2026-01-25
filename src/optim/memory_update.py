@@ -201,9 +201,9 @@ def parallel_local_memory_update(
         Each shard is independent, enabling full parallelism.
         NO cross-shard dependencies within this operation.
     """
-    _num_shards = local_memories.size(0)  # noqa: F841 - documentation variable
-    _dim = local_memories.size(1)  # noqa: F841 - documentation variable
-    _shard_len = local_keys.size(1)  # noqa: F841 - documentation variable
+    _num_shards = local_memories.size(0)  # documentation variable
+    _dim = local_memories.size(1)  # documentation variable
+    _shard_len = local_keys.size(1)  # documentation variable
 
     # Compute outer product sums for each shard in parallel
     # Shape: (_num_shards, _shard_len, _dim) -> (_num_shards, _dim, _dim)
