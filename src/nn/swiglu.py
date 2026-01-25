@@ -38,6 +38,15 @@ class SwiGLU(nn.Module):
         hidden_dim: int | None = None,
         bias: bool = False,
     ):
+        """
+        Initialize SwiGLU feedforward block.
+
+        Args:
+            dim: Input and output dimension of the block
+            hidden_dim: Hidden layer dimension. If None, computed as int(dim * 4 * 2/3)
+                       rounded to multiple of 64 for GPU efficiency
+            bias: Whether to include bias terms in linear layers
+        """
         super().__init__()
         # Default hidden dim maintains parameter parity with standard FFN
         # Standard FFN: 2 * dim * (4*dim) = 8 * dim^2
@@ -76,6 +85,7 @@ class SwiGLU(nn.Module):
         return out
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, hidden_dim={self.hidden_dim}"
 
 
@@ -93,6 +103,18 @@ class SwiGLUFused(nn.Module):
         hidden_dim: int | None = None,
         bias: bool = False,
     ):
+        """
+        Initialize fused SwiGLU feedforward block.
+
+        The fused variant combines W1 and W2 into a single projection matrix,
+        reducing memory bandwidth at the cost of slightly more compute.
+
+        Args:
+            dim: Input and output dimension of the block
+            hidden_dim: Hidden layer dimension. If None, computed as int(dim * 4 * 2/3)
+                       rounded to multiple of 64 for GPU efficiency
+            bias: Whether to include bias terms in linear layers
+        """
         super().__init__()
         if hidden_dim is None:
             hidden_dim = int(dim * 4 * 2 / 3)
@@ -118,4 +140,5 @@ class SwiGLUFused(nn.Module):
         return out
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, hidden_dim={self.hidden_dim}, fused=True"

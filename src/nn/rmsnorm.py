@@ -30,6 +30,13 @@ class RMSNorm(nn.Module):
     """
 
     def __init__(self, dim: int, eps: float = 1e-6):
+        """
+        Initialize RMSNorm layer.
+
+        Args:
+            dim: The dimension to normalize over (typically the last/feature dimension)
+            eps: Small constant added to denominator for numerical stability
+        """
         super().__init__()
         self.eps = eps
         self.dim = dim
@@ -56,4 +63,5 @@ class RMSNorm(nn.Module):
         return self._norm(x.float()).type_as(x) * self.weight
 
     def extra_repr(self) -> str:
+        """Return a string with extra module information for repr()."""
         return f"dim={self.dim}, eps={self.eps}"
