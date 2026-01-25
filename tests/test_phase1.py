@@ -35,7 +35,7 @@ from src.training.polarization import (
     gate_polarization_loss,
     compute_gate_statistics,
 )
-from src.training.fast_fail import GateMonitor, FastFailError, check_gate_health
+from src.training.gate_monitor import GateMonitor, FastFailError, check_gate_health
 from src.training.trainer import Phase1Trainer, verify_multiplicative_fusion
 
 
@@ -122,8 +122,12 @@ class TestAnnealingSchedule:
             prev = curr
 
 
-class TestFastFail:
-    """Tests for fast-fail gate monitoring (P1-T5)."""
+class TestGateMonitor:
+    """Tests for gate health monitoring (P1-T5).
+
+    Note: Research-grade implementation - logs warnings but does NOT abort.
+    Tests verify status flags in returned dict instead of exceptions.
+    """
 
     def test_baseline_recording(self):
         """Monitor should record baseline at step 100."""
@@ -148,25 +152,33 @@ class TestFastFail:
 
         # High variance at step 500 (should pass)
         gates_high_var = torch.tensor([0.1, 0.5, 0.9])
-        # This should not raise
-        monitor.check(gates_high_var, step=500)
+        stats = monitor.check(gates_high_var, step=500)
 
-    def test_variance_check_fail(self):
-        """Should fail if variance doesn't increase enough."""
+        # Research-grade: check status flag instead of exception
+        assert stats["variance_check_passed"] is True
+
+    def test_variance_check_fail_logs_warning(self):
+        """Should log warning if variance doesn't increase enough.
+
+        Note: Research-grade - logs warning but does NOT abort.
+        """
         monitor = GateMonitor()
 
         # Some variance at step 100
         gates = torch.tensor([0.4, 0.5, 0.6])
         monitor.check(gates, step=100)
 
-        # Same variance at step 500 (should fail)
-        with pytest.raises(FastFailError) as exc_info:
-            monitor.check(gates, step=500)
+        # Same variance at step 500 (should warn but NOT raise)
+        stats = monitor.check(gates, step=500)
 
-        assert "variance not increasing" in str(exc_info.value).lower()
+        # Research-grade: check status flag instead of exception
+        assert stats["variance_check_passed"] is False
 
-    def test_std_collapse_detection(self):
-        """Should fail if std drops below 0.01."""
+    def test_std_collapse_logs_warning(self):
+        """Should log warning if std drops below 0.01.
+
+        Note: Research-grade - logs warning but does NOT abort.
+        """
         monitor = GateMonitor()
 
         # Normal at step 100
@@ -175,10 +187,10 @@ class TestFastFail:
 
         # Collapsed at step 200 (all same value)
         gates_collapsed = torch.tensor([0.5001, 0.5002, 0.5003])  # std < 0.01
-        with pytest.raises(FastFailError) as exc_info:
-            monitor.check(gates_collapsed, step=200)
+        stats = monitor.check(gates_collapsed, step=200)
 
-        assert "std collapsed" in str(exc_info.value).lower()
+        # Research-grade: check status flag instead of exception
+        assert stats["std_collapsed"] is True
 
     def test_reset(self):
         """Reset should clear state."""
@@ -209,6 +221,30 @@ class TestGateHealthCheck:
         result = check_gate_health(gates, step=0, warn_threshold=0.3)
         assert result["healthy"] is False
         assert result["indecisive_ratio"] > 0.3
+
+    def test_polarization_target_met(self):
+        """Should report polarization_target_met when >= 20% polarized (Phase-4)."""
+        # All polarized: 100% > 20%
+        gates = torch.tensor([0.05, 0.08, 0.92, 0.95])
+        result = check_gate_health(gates, step=0)
+        assert result["polarization_target_met"] is True
+        assert result["polarization_target"] == 0.20  # Default from config
+
+    def test_polarization_target_not_met(self):
+        """Should report polarization_target_met=False when < 20% polarized."""
+        # 1 out of 5 polarized = 20%, but let's test below threshold
+        gates = torch.tensor([0.3, 0.4, 0.5, 0.6, 0.7])  # None polarized
+        result = check_gate_health(gates, step=0)
+        assert result["polarization_target_met"] is False
+        assert result["polarized_ratio"] == 0.0
+
+    def test_polarization_target_custom(self):
+        """Should respect custom polarization target."""
+        gates = torch.tensor([0.05, 0.5, 0.5, 0.5])  # 25% polarized
+        result = check_gate_health(gates, step=0, polarization_target=0.5)
+        # 25% < 50% target
+        assert result["polarization_target_met"] is False
+        assert result["polarization_target"] == 0.5
 
 
 class TestMultiplicativeFusion:

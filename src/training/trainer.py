@@ -22,7 +22,7 @@ from torch import Tensor
 from torch.optim import Optimizer
 
 from src.training.polarization import gate_polarization_loss, compute_gate_statistics
-from src.training.fast_fail import GateMonitor, FastFailError
+from src.training.gate_monitor import GateMonitor, FastFailError
 
 logger = logging.getLogger(__name__)
 

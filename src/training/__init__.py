@@ -20,7 +20,7 @@ from src.training.polarization import (
     gate_polarization_loss,
     compute_gate_statistics,
 )
-from src.training.fast_fail import (
+from src.training.gate_monitor import (
     FastFailError,
     GateMonitor,
 )
