@@ -9,7 +9,7 @@ User Decision: WikiText-2 for fast iteration
 
 import logging
 from pathlib import Path
-from typing import Any, cast, Iterator, List, Optional, Protocol, Union
+from typing import cast, Iterator, List, Optional, Protocol, Union
 
 import torch
 from torch import Tensor

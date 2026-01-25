@@ -25,8 +25,8 @@ from torch.optim import Optimizer
 from src.model.qk_projection import QKProjection, create_qk_projection_for_model
 from src.training.polarization import gate_polarization_loss, compute_gate_statistics
 from src.training.fast_fail import GateMonitor, FastFailError
-from src.training.niah_probe import NIAHProbe, NIAHResult
-from src.training.telemetry import TelemetryLogger, StepMetrics
+from src.training.niah_probe import NIAHProbe
+from src.training.telemetry import TelemetryLogger
 from src.training.checkpoint import CheckpointManager
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ Reference: TNT paper (arXiv:2511.07343)
 """
 
 import logging
-from typing import Any, Callable, List, Optional, Protocol, Tuple
+from typing import Callable, List, Optional, Protocol, Tuple
 
 import torch
 import torch.nn as nn
@@ -24,8 +24,6 @@ from tqdm import tqdm
 
 from src.config import (
     CALIBRATION_TOKENS,
-    CALIBRATION_BATCH_SIZE,
-    CALIBRATION_SEQ_LEN,
     RESET_SHOCK_THRESHOLD,
 )
 

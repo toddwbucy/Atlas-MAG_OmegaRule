@@ -16,7 +16,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Tuple
 
 import torch
 from torch import Tensor, nn

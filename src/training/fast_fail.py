@@ -15,7 +15,6 @@ Reference: PRD Section "Fast-Fail Checks"
 import logging
 from typing import Optional
 
-import torch
 from torch import Tensor
 
 from src.config import FAST_FAIL
