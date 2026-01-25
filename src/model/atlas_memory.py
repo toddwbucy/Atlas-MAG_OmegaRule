@@ -181,7 +181,7 @@ class AtlasMemoryPoly(nn.Module):
         Returns:
             Expanded tensor of shape (batch, seq_len, poly_dim)
         """
-        batch, seq_len, d = x.shape
+        _batch, _seq_len, _d = x.shape
 
         # Compute outer product: x_i * x_j
         # Shape: (batch, seq_len, dim, dim)
