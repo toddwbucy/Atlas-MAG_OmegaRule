@@ -3,7 +3,7 @@ Training utilities for Atlas-MAG with Omega Rule.
 
 Phase 1: Architecture Validation
 - Gate polarization loss with annealing
-- Fast-fail monitoring for early abort
+- Gate health monitoring (logs warnings, does not abort)
 - Training loop orchestration
 
 Phase 2: Training Infrastructure
@@ -20,7 +20,7 @@ from src.training.polarization import (
     gate_polarization_loss,
     compute_gate_statistics,
 )
-from src.training.fast_fail import (
+from src.training.gate_monitor import (
     FastFailError,
     GateMonitor,
 )
@@ -35,7 +35,7 @@ __all__ = [
     "get_lambda_polar",
     "gate_polarization_loss",
     "compute_gate_statistics",
-    # Fast-fail
+    # Gate monitoring
     "FastFailError",
     "GateMonitor",
     # Phase 1 Training

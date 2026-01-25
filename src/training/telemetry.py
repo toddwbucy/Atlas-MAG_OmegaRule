@@ -14,12 +14,11 @@ import json
 import logging
 import math
 from collections import deque
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Deque
 
-import torch
 
 logger = logging.getLogger(__name__)
 

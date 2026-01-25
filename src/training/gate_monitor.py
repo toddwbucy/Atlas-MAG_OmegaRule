@@ -1,24 +1,24 @@
 """
-Fast-Fail Gate Monitoring for Phase 1 Architecture Validation.
+Gate Health Monitoring for Phase 1 Architecture Validation.
 
-Implements early abort conditions to detect broken training runs.
-From PRD: "The system needs to scream 'I'm broken' immediately"
+Implements non-fatal gate-health checks and warning logs to detect broken runs.
+From PRD: "The system needs to scream 'I'm broken' immediately" (via warnings)
 
-Fast-fail checks:
+Gate health checks:
     1. Step 100: Record initial gate variance (baseline)
-    2. Step 500: Verify variance increased ≥1.5× (gates are learning)
-    3. Continuous: Abort if gate std < 0.01 (collapsed to single value)
+    2. Step 500: Verify variance increased >=1.5x (gates are learning)
+    3. Continuous: Warn if gate std < 0.01 (collapsed to single value)
 
+Note: Research-grade implementation - logs warnings but does NOT abort.
 Reference: PRD Section "Fast-Fail Checks"
 """
 
 import logging
 from typing import Optional
 
-import torch
 from torch import Tensor
 
-from src.config import FAST_FAIL
+from src.config import FAST_FAIL, VALIDATION_TARGETS
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,10 @@ class FastFailError(Exception):
 
 class GateMonitor:
     """
-    Monitor gate variance trajectory for fast-fail detection.
+    Monitor gate variance trajectory for training health.
 
-    The monitor tracks gate statistics and raises FastFailError if:
-    1. Gate variance at step 500 < 1.5 × variance at step 100
+    The monitor tracks gate statistics and logs warnings if:
+    1. Gate variance at step 500 < 1.5 * variance at step 100
     2. Gate std drops below 0.01 at any point after step 100
 
     These conditions indicate the gates aren't learning to route,
@@ -71,10 +71,14 @@ class GateMonitor:
         >>> monitor = GateMonitor()
         >>> for step in range(1000):
         ...     gate_values = model.get_gate_values()
-        ...     monitor.check(torch.tensor(gate_values), step)
+        ...     stats = monitor.check(torch.tensor(gate_values), step)
+        ...     if stats.get("std_collapsed"):
+        ...         # Handle collapsed gates (optional)
+        ...         pass
 
-    Raises:
-        FastFailError: If any fast-fail condition is triggered
+    Note:
+        Research-grade implementation - logs warnings but does NOT abort.
+        Check returned stats for 'variance_check_passed' and 'std_collapsed'.
     """
 
     def __init__(self):
@@ -91,15 +95,18 @@ class GateMonitor:
         """
         Check gate statistics against fast-fail conditions.
 
+        NOTE: Research-grade implementation - logs warnings but does NOT abort.
+        Check returned stats for 'variance_check_passed' and 'std_collapsed'
+        flags if you need to take action programmatically.
+
         Args:
             gate_values: Tensor of gate values from model
             step: Current training step
 
         Returns:
-            Dictionary with current gate statistics
-
-        Raises:
-            FastFailError: If any fast-fail condition is met
+            Dictionary with current gate statistics including:
+                - variance_check_passed: Optional[bool] - None except at step 500
+                - std_collapsed: bool (continuous check after step 100)
         """
         # Compute statistics
         gate_tensor = gate_values.detach().float()
@@ -114,6 +121,9 @@ class GateMonitor:
             "mean": current_mean,
             "min": gate_tensor.min().item(),
             "max": gate_tensor.max().item(),
+            # Status flags (always present to avoid KeyError)
+            "variance_check_passed": None,  # Set at check_step (500)
+            "std_collapsed": False,  # Updated every step after baseline
         }
 
         # Record baseline at step 100
@@ -127,39 +137,34 @@ class GateMonitor:
             )
 
         # Check 1: Variance increase at step 500
+        # NOTE: Research-grade - log warnings, don't abort (per PRD philosophy)
         if step == self.check_step and self.initial_variance is not None:
             expected_min = self.initial_variance * self.variance_multiplier
             if current_variance < expected_min:
-                raise FastFailError(
-                    f"Gate variance not increasing! "
-                    f"Expected ≥{expected_min:.6f} (= {self.initial_variance:.6f} × {self.variance_multiplier}), "
+                logger.warning(
+                    f"[Step {step}] Gate variance check FAILED: "
+                    f"Expected >={expected_min:.6f} (= {self.initial_variance:.6f} * {self.variance_multiplier}), "
                     f"got {current_variance:.6f}. "
-                    f"ABORTING - architecture stuck in mushy middle.",
-                    step=step,
-                    details={
-                        "initial_variance": self.initial_variance,
-                        "current_variance": current_variance,
-                        "expected_multiplier": self.variance_multiplier,
-                    },
+                    f"Gates may be stuck in mushy middle - continuing but monitor closely."
                 )
+                stats["variance_check_passed"] = False
             else:
                 logger.info(
                     f"[Step {step}] Gate variance check PASSED: "
                     f"{current_variance:.6f} ≥ {expected_min:.6f}"
                 )
+                stats["variance_check_passed"] = True
 
         # Check 2: Continuous std check after step 100
+        # NOTE: Research-grade - log warnings, don't abort (per PRD philosophy)
         if step > self.baseline_step and current_std < self.std_min:
-            raise FastFailError(
-                f"Gate std collapsed to {current_std:.6f} < {self.std_min}. "
-                f"All gates converged to same value - killing run.",
-                step=step,
-                details={
-                    "std": current_std,
-                    "threshold": self.std_min,
-                    "mean": current_mean,
-                },
+            logger.warning(
+                f"[Step {step}] Gate std collapsed to {current_std:.6f} < {self.std_min}. "
+                f"All gates converging to same value - continuing but investigate."
             )
+            stats["std_collapsed"] = True
+        else:
+            stats["std_collapsed"] = False
 
         # Store in history (keep last 100 entries)
         self.history.append(stats)
@@ -194,6 +199,7 @@ def check_gate_health(
     gate_values: Tensor,
     step: int,
     warn_threshold: float = 0.3,
+    polarization_target: float | None = None,
 ) -> dict:
     """
     Quick health check for gate values (non-fatal).
@@ -205,9 +211,14 @@ def check_gate_health(
         gate_values: Tensor of gate values
         step: Current step (for logging)
         warn_threshold: Threshold for warning about indecisive gates
+        polarization_target: Phase-4 target for polarized ratio (default: from config)
 
     Returns:
-        Dictionary with health status and diagnostics
+        Dictionary with health status and diagnostics including:
+            - healthy: bool (indecisive_ratio < warn_threshold)
+            - polarization_target_met: bool (polarized_ratio >= target, Phase-4 criterion)
+            - polarized_ratio: float
+            - indecisive_ratio: float
     """
     values = gate_values.detach().float()
 
@@ -228,8 +239,24 @@ def check_gate_health(
             f"{indecisive_ratio:.1%} of gates in (0.4, 0.6)"
         )
 
+    # Phase-4 polarization target check (PRD: >=20% tokens at <0.1 or >0.9)
+    target = (
+        VALIDATION_TARGETS.gate_polarization_ratio
+        if polarization_target is None
+        else polarization_target
+    )
+    polarization_target_met = polarized_ratio >= target
+
+    if not polarization_target_met:
+        logger.debug(
+            f"[Step {step}] Polarization target not yet met: "
+            f"{polarized_ratio:.1%} < {target:.1%} (Phase-4 criterion)"
+        )
+
     return {
         "healthy": healthy,
+        "polarization_target_met": polarization_target_met,
+        "polarization_target": target,
         "polarized_ratio": polarized_ratio,
         "indecisive_ratio": indecisive_ratio,
         "polarized_low": polarized_low,

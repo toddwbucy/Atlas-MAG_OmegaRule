@@ -43,7 +43,6 @@ def tensorized_outer_product_sum(keys: Tensor) -> Tensor:
         NO Python loops over any dimension.
     """
     # Flatten to 2D: (..., dim) -> (n, dim)
-    original_shape = keys.shape
     dim = keys.size(-1)
     flat_keys = keys.reshape(-1, dim)
 
@@ -202,12 +201,12 @@ def parallel_local_memory_update(
         Each shard is independent, enabling full parallelism.
         NO cross-shard dependencies within this operation.
     """
-    num_shards = local_memories.size(0)
-    dim = local_memories.size(1)
-    shard_len = local_keys.size(1)
+    _num_shards = local_memories.size(0)  # documentation variable
+    _dim = local_memories.size(1)  # documentation variable
+    _shard_len = local_keys.size(1)  # documentation variable
 
     # Compute outer product sums for each shard in parallel
-    # Shape: (num_shards, shard_len, dim) -> (num_shards, dim, dim)
+    # Shape: (_num_shards, _shard_len, _dim) -> (_num_shards, _dim, _dim)
     outer_sums = torch.einsum('nsd,nse->nde', local_keys, local_keys)
 
     # Update all memories at once

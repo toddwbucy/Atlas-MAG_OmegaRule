@@ -7,7 +7,6 @@ Combines the SiLU (Swish) activation with a gating mechanism.
 Reference: https://arxiv.org/abs/2002.05202
 """
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor

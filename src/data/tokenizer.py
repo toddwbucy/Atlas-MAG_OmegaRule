@@ -10,9 +10,8 @@ User Decision: Custom BPE trained on WikiText-2
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Union
 
-import torch
 from torch import Tensor
 
 from src.config import VOCAB_SIZE, SPECIAL_TOKENS
