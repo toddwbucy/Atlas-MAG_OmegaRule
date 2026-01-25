@@ -36,6 +36,11 @@ def setup_logging(
 
     if log_file is not None:
         log_file = Path(log_file)
+        # In distributed training, create per-rank log files to avoid collisions
+        # Only rank 0 writes to the main log file; others get rank-suffixed files
+        if world_size > 1 and rank != 0:
+            # e.g., "train.log" -> "train_rank1.log"
+            log_file = log_file.with_stem(f"{log_file.stem}_rank{rank}")
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
 
