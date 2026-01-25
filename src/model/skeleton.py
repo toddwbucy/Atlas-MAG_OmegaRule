@@ -299,6 +299,10 @@ class AtlasMAGBlock(nn.Module):
         """Get current gate value for monitoring."""
         return torch.sigmoid(self.memory_gate).item()
 
+    def get_gate_param(self) -> Tensor:
+        """Get raw gate parameter tensor (preserves gradients)."""
+        return self.memory_gate
+
 
 class AtlasMAGSkeleton(nn.Module):
     """
@@ -455,6 +459,22 @@ class AtlasMAGSkeleton(nn.Module):
             mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
             gate_values.append(mag_block.get_gate_value())
         return gate_values
+
+    def get_gate_params(self) -> list[Tensor]:
+        """
+        Get raw gate parameter tensors from all blocks.
+
+        Unlike get_gate_values() which returns detached floats, this
+        preserves gradient connections for loss backpropagation.
+
+        Returns:
+            List of gate parameter tensors (one per layer)
+        """
+        gate_params: list[Tensor] = []
+        for block in self.blocks:
+            mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
+            gate_params.append(mag_block.get_gate_param())
+        return gate_params
 
     def get_gate_stats(self) -> dict:
         """
