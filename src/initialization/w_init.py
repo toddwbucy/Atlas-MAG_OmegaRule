@@ -120,6 +120,11 @@ def compute_steady_state_init(
 
     if not use_running_mean:
         # Stack and compute mean
+        if not all_states:
+            raise ValueError(
+                "No calibration batches processed; cannot compute W_init. "
+                "Check that calibration_loader yields data."
+            )
         all_states_tensor = torch.cat(all_states, dim=0)
         w_init = all_states_tensor.mean(dim=0).to(device)
 
@@ -292,7 +297,9 @@ def calibrate_with_increasing_tokens(
 
         # Create calibration loader
         cal_loader = loader_fn(num_tokens)
-        test_loader = loader_fn(num_tokens // 10)
+        # Ensure test_loader gets at least 1 token (avoids empty loader when num_tokens < 10)
+        test_tokens = max(1, num_tokens // 10)
+        test_loader = loader_fn(test_tokens)
 
         # Compute W_init
         w_init = compute_steady_state_init(
