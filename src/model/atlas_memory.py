@@ -190,6 +190,45 @@ class AtlasMemoryPoly(nn.Module):
         )
 
         self._init_weights()
+        self._init_momentum_buffers()
+
+    def _init_momentum_buffers(self) -> None:
+        """
+        Initialize momentum buffers for TTL (Test-Time Learning).
+
+        Creates a zero-initialized buffer for each parameter, used to accumulate
+        momentum during TTL updates per Eq. 33: S_t = theta * S_{t-1} + grad.
+
+        Buffers are registered with persistent=True so they survive serialization.
+        """
+        for name, param in self.named_parameters():
+            # Replace dots with underscores for valid attribute names
+            buffer_name = f"momentum_{name.replace('.', '_')}"
+            self.register_buffer(buffer_name, torch.zeros_like(param), persistent=True)
+
+    def get_momentum(self, name: str) -> Tensor:
+        """
+        Get the momentum buffer for a named parameter.
+
+        Args:
+            name: Parameter name (e.g., 'w1.weight', 'proj_down.weight')
+
+        Returns:
+            Momentum tensor (same shape as the parameter)
+        """
+        buffer_name = f"momentum_{name.replace('.', '_')}"
+        momentum = getattr(self, buffer_name)
+        return cast(Tensor, momentum)
+
+    def reset_momentum(self) -> None:
+        """
+        Reset all momentum buffers to zero.
+
+        Call this at sequence/batch boundaries depending on TTL_RESET_MODE.
+        """
+        for name, param in self.named_parameters():
+            buffer_name = f"momentum_{name.replace('.', '_')}"
+            getattr(self, buffer_name).zero_()
 
     def _init_weights(self):
         """Initialize weights for stable training with meaningful initial output.
