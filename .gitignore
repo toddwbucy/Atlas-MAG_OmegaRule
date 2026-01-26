@@ -71,6 +71,16 @@ tensorboard/
 # OS
 .DS_Store
 Thumbs.db
+nohup.out
+
+# PDFs and papers (reference only, not tracked)
+*.pdf
+
+# Analysis outputs (regenerable)
+output/
+
+# Auto-generated docs
+docs/
 
 # Secrets
 .env
