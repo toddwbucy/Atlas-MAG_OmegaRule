@@ -16,7 +16,6 @@ Where:
 Reference: Atlas paper (arXiv:2505.23735)
 """
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
