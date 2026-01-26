@@ -141,10 +141,10 @@ class AtlasMAGBlock(nn.Module):
         n_layers: int = 12,
         # TTL (Test-Time Learning) configuration
         ttl_enabled: bool = True,
-        ttl_theta: float = 0.9,       # Momentum decay
-        ttl_alpha: float = 0.999,     # Weight decay
-        ttl_eta: float = 0.01,        # Learning rate
-        ttl_ns_iters: int = 5,        # Newton-Schulz iterations
+        ttl_theta: float = 0.9,  # Momentum decay
+        ttl_alpha: float = 0.999,  # Weight decay
+        ttl_eta: float = 0.01,  # Learning rate
+        ttl_ns_iters: int = 5,  # Newton-Schulz iterations
     ):
         super().__init__()
         self.dim = dim
@@ -223,16 +223,17 @@ class AtlasMAGBlock(nn.Module):
         """
         Compute per-layer gate initialization.
 
-        Spreads gate initialization across layers to encourage differentiation:
-        - Early layers: more attention-focused (lower gate values)
-        - Later layers: more memory-focused (higher gate values)
+        Uses AGGRESSIVE initialization to prevent gate collapse. Previous
+        conservative values (0.047-0.269) allowed the model to rationally
+        ignore memory in favor of attention because the gradient signal
+        through a nearly-closed gate was too weak to compete.
 
         The initialization maps to sigmoid values:
-        - Layer 0: sigmoid(-3.0) ≈ 0.047 (5% memory)
-        - Layer n-1: sigmoid(-1.0) ≈ 0.269 (27% memory)
+        - Layer 0: sigmoid(0.0) = 0.5 (50% memory)
+        - Layer n-1: sigmoid(0.5) ≈ 0.62 (62% memory)
 
-        This encourages early layers to learn local patterns via attention
-        while later layers can leverage long-range memory retrieval.
+        This forces significant signal through the memory module, preventing
+        the optimizer from collapsing gates before memory has a chance to learn.
 
         Args:
             layer_idx: Current layer index (0-indexed)
@@ -241,10 +242,13 @@ class AtlasMAGBlock(nn.Module):
         Returns:
             Gate initialization value (pre-sigmoid)
         """
-        # Linear interpolation from -3.0 (early) to -1.0 (late)
-        # This gives sigmoid range [0.047, 0.269]
-        gate_start = -3.0  # sigmoid ≈ 0.047
-        gate_end = -1.0    # sigmoid ≈ 0.269
+        # Linear interpolation from 0.0 (early) to 0.5 (late)
+        # This gives sigmoid range [0.5, 0.62] - aggressive initialization
+        # to force signal through memory before the model can collapse gates.
+        # Previous values (0.047-0.269) were too conservative and allowed
+        # the model to rationally ignore memory in favor of attention.
+        gate_start = 0.0  # sigmoid = 0.5
+        gate_end = 0.5  # sigmoid ≈ 0.62
 
         if n_layers <= 1:
             return (gate_start + gate_end) / 2
@@ -254,7 +258,7 @@ class AtlasMAGBlock(nn.Module):
 
     def _init_weights(self):
         """Initialize output projection."""
-        nn.init.normal_(self.w_o.weight, std=0.02 / (2 ** 0.5))
+        nn.init.normal_(self.w_o.weight, std=0.02 / (2**0.5))
 
     def forward(
         self,
@@ -306,6 +310,7 @@ class AtlasMAGBlock(nn.Module):
         if self.ttl_enabled and not self.disable_memory and self.use_poly_memory:
             # TTL requires AtlasMemoryPoly with momentum buffers
             from typing import cast as type_cast
+
             memory_poly = type_cast(AtlasMemoryPoly, self.memory)
 
             # Flatten v from (batch, n_heads, seq_len, head_dim) to (batch, seq_len, dim)
@@ -340,7 +345,7 @@ class AtlasMAGBlock(nn.Module):
 
         # === SWA Branch: Standard scaled dot-product attention ===
         # Shape: (batch, n_heads, seq_len, seq_len)
-        scale = self.head_dim ** -0.5
+        scale = self.head_dim**-0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
 
         # Apply causal mask
@@ -449,24 +454,26 @@ class AtlasMAGSkeleton(nn.Module):
 
         # Transformer blocks (pass persistent_memory for Q-K projection)
         # Each block gets its layer index for per-layer gate initialization
-        self.blocks = nn.ModuleList([
-            AtlasMAGBlock(
-                dim=dim,
-                n_heads=n_heads,
-                memory_expansion=memory_expansion,
-                disable_memory=disable_memory,
-                persistent_memory=self.persistent_memory,
-                layer_idx=i,
-                n_layers=n_layers,
-                # TTL configuration
-                ttl_enabled=ttl_enabled,
-                ttl_theta=ttl_theta,
-                ttl_alpha=ttl_alpha,
-                ttl_eta=ttl_eta,
-                ttl_ns_iters=ttl_ns_iters,
-            )
-            for i in range(n_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                AtlasMAGBlock(
+                    dim=dim,
+                    n_heads=n_heads,
+                    memory_expansion=memory_expansion,
+                    disable_memory=disable_memory,
+                    persistent_memory=self.persistent_memory,
+                    layer_idx=i,
+                    n_layers=n_layers,
+                    # TTL configuration
+                    ttl_enabled=ttl_enabled,
+                    ttl_theta=ttl_theta,
+                    ttl_alpha=ttl_alpha,
+                    ttl_eta=ttl_eta,
+                    ttl_ns_iters=ttl_ns_iters,
+                )
+                for i in range(n_layers)
+            ]
+        )
 
         # Final normalization and output projection
         self.norm_f = RMSNorm(dim)
@@ -559,18 +566,20 @@ class AtlasMAGSkeleton(nn.Module):
             # Cast to AtlasMAGBlock to access memory attribute
             mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
             mem = mag_block.memory
-            memory_states.extend([
-                mem.w1.weight.flatten(),
-                mem.w2.weight.flatten(),
-                mem.w3.weight.flatten(),
-            ])
+            memory_states.extend(
+                [
+                    mem.w1.weight.flatten(),
+                    mem.w2.weight.flatten(),
+                    mem.w3.weight.flatten(),
+                ]
+            )
             # Include projection layers for AtlasMemoryPoly
             # Note: poly_norm is intentionally excluded - it's normalization
             # infrastructure, not learned memory content (like a sound engineer's
             # mixer settings vs. the actual music being recorded)
-            if hasattr(mem, 'proj_down'):
+            if hasattr(mem, "proj_down"):
                 memory_states.append(mem.proj_down.weight.flatten())
-            if hasattr(mem, 'proj_up'):
+            if hasattr(mem, "proj_up"):
                 memory_states.append(mem.proj_up.weight.flatten())
 
         memory_state = torch.cat(memory_states)
@@ -629,7 +638,7 @@ class AtlasMAGSkeleton(nn.Module):
         """
         for block in self.blocks:
             mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
-            if hasattr(mag_block.memory, 'reset_momentum'):
+            if hasattr(mag_block.memory, "reset_momentum"):
                 mag_block.memory.reset_momentum()
 
     def set_ttl_enabled(self, enabled: bool) -> None:
@@ -692,10 +701,7 @@ class AtlasMAGSkeleton(nn.Module):
             if self.persistent_memory is not None
             else 0
         )
-        blocks = sum(
-            sum(p.numel() for p in block.parameters())
-            for block in self.blocks
-        )
+        blocks = sum(sum(p.numel() for p in block.parameters()) for block in self.blocks)
         head = 0  # Tied with embeddings
 
         total = sum(p.numel() for p in self.parameters())
