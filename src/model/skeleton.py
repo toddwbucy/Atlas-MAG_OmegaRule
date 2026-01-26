@@ -6,13 +6,13 @@ with output-level combination of SWA (attention) and memory branches.
 
 Key features from Atlas paper (arXiv:2505.23735):
 - Output-level combination: SWA and memory run as parallel branches
-- Polynomial features (φ_2): Essential for memory capacity O(d_k²)
-- Input-dependent γ gates: Per-position decay modulation
+- Polynomial features (phi_2): Essential for memory capacity O(d_k^2)
+- Input-dependent gamma gates: Per-position decay modulation
 - Per-layer gate initialization: Spread across layers for differentiation
 
 Memory capacity (Section 3.1, Propositions 1 & 2):
-- Without polynomial features: O(d_k) ≈ 64 associations
-- With φ_2 polynomial features: O(d_k²) ≈ 4,096 associations
+- Without polynomial features: O(d_k) ~ 64 associations
+- With phi_2 polynomial features: O(d_k^2) ~ 4,096 associations
 
 Note: TNT (Titans-in-Titans) hierarchical memory is NOT implemented.
 This model uses single-layer memory with polynomial feature expansion.
@@ -29,13 +29,19 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from src.config import (
-    D, N_HEADS, N_PERSISTENT, MEMORY_EXPANSION, VOCAB_SIZE,
-    GAMMA_GATE_HIDDEN_DIM, USE_POLY_MEMORY, POLY_DEGREE,
+    GAMMA_GATE_HIDDEN_DIM,
+    MEMORY_EXPANSION,
+    N_HEADS,
+    N_PERSISTENT,
+    POLY_DEGREE,
+    USE_POLY_MEMORY,
+    VOCAB_SIZE,
+    D,
 )
 from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
 from src.model.persistent_memory import PersistentMemory
-from src.model.qk_projection import CausalQKMemoryProjection
 from src.model.projections import QKVProjection, RotaryEmbedding
+from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
 
@@ -44,13 +50,13 @@ logger = logging.getLogger(__name__)
 
 class GammaGate(nn.Module):
     """
-    Input-dependent γ gate for Omega Rule context pruning.
+    Input-dependent gamma gate for Omega Rule context pruning.
 
     Produces per-position decay multipliers that modulate the base
     exponential decay in the memory context window. This allows the
     model to selectively forget irrelevant past context based on content.
 
-    Architecture: x -> Linear -> SiLU -> Linear -> Sigmoid -> γ
+    Architecture: x -> Linear -> SiLU -> Linear -> Sigmoid -> gamma
 
     Reference: Atlas paper (arXiv:2505.23735) Eq. 9
     """
@@ -76,7 +82,7 @@ class GammaGate(nn.Module):
         """Initialize to output ~0.5 initially (neutral modulation)."""
         # First linear: small random
         nn.init.normal_(self.gate[0].weight, std=0.02)
-        # Second linear: near-zero so sigmoid(0) ≈ 0.5
+        # Second linear: near-zero so sigmoid(0) ~ 0.5
         nn.init.zeros_(self.gate[2].weight)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -100,14 +106,14 @@ class AtlasMAGBlock(nn.Module):
         Input → [SWA Branch] ──────┐
               → [Memory Branch] ───┼──► Add → Output
 
-    Memory branch uses AtlasMemoryPoly with polynomial features (φ_2):
-        - Capacity without φ: O(d_k) ≈ 64 associations
-        - Capacity with φ_2: O(d_k²) ≈ 4,096 associations
+    Memory branch uses AtlasMemoryPoly with polynomial features (phi_2):
+        - Capacity without phi: O(d_k) ~ 64 associations
+        - Capacity with phi_2: O(d_k^2) ~ 4,096 associations
 
     Key features from Atlas paper:
     - Output-level combination (not Q-level blending)
     - Polynomial features for increased memory capacity (ESSENTIAL)
-    - Input-dependent γ gates for context pruning
+    - Input-dependent gamma gates for context pruning
     - Per-layer gate initialization for differentiation
 
     Args:
@@ -157,18 +163,18 @@ class AtlasMAGBlock(nn.Module):
                 n_heads=n_heads,
                 persistent_memory=persistent_memory,
             )
-            # Input-dependent γ gate for context pruning
+            # Input-dependent gamma gate for context pruning
             self.gamma_gate = GammaGate(dim)
 
         # Memory module: AtlasMemoryPoly (with polynomial features) or AtlasMemory
         # Polynomial features are ESSENTIAL for memory capacity (Atlas paper Section 3.1)
-        # Without: O(d_k) capacity. With φ_2: O(d_k²) capacity (64× improvement for d_k=64)
+        # Without: O(d_k) capacity. With phi_2: O(d_k^2) capacity (64x improvement for d_k=64)
         self.use_poly_memory = USE_POLY_MEMORY
         if USE_POLY_MEMORY:
             # key_dim = head_dim for polynomial features (capacity theorem uses d_k)
             self.memory: nn.Module = AtlasMemoryPoly(
                 dim=dim,
-                key_dim=self.head_dim,  # Use head_dim for O(d_k²) capacity
+                key_dim=self.head_dim,  # Use head_dim for O(d_k^2) capacity
                 expansion=memory_expansion,
                 poly_degree=POLY_DEGREE,
             )
@@ -177,8 +183,8 @@ class AtlasMAGBlock(nn.Module):
 
         # Memory gate: controls Q vs Q' blending
         # PER-LAYER INITIALIZATION: Spread gates across layers
-        # Early layers (idx=0): more attention-focused (gate ≈ 0.1)
-        # Later layers (idx=n-1): more memory-focused (gate ≈ 0.3)
+        # Early layers (idx=0): more attention-focused (gate ~ 0.1)
+        # Later layers (idx=n-1): more memory-focused (gate ~ 0.3)
         # This encourages layer specialization during training
         gate_init = self._compute_layer_gate_init(layer_idx, n_layers)
         self.memory_gate = nn.Parameter(torch.tensor([gate_init]))
@@ -473,11 +479,15 @@ class AtlasMAGSkeleton(nn.Module):
                 mem.w2.weight.flatten(),
                 mem.w3.weight.flatten(),
             ])
-            # Include projection layers for AtlasMemoryPoly
+            # Include projection layers and poly_norm for AtlasMemoryPoly
             if hasattr(mem, 'proj_down'):
                 memory_states.append(mem.proj_down.weight.flatten())
             if hasattr(mem, 'proj_up'):
                 memory_states.append(mem.proj_up.weight.flatten())
+            if hasattr(mem, 'poly_norm'):
+                memory_states.append(mem.poly_norm.weight.flatten())
+                if mem.poly_norm.bias is not None:
+                    memory_states.append(mem.poly_norm.bias.flatten())
 
         memory_state = torch.cat(memory_states)
 
