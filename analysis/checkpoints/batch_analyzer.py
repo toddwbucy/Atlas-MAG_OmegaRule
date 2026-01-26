@@ -64,6 +64,7 @@ class BatchCheckpointAnalyzer:
         # Auto-detect CUDA availability if device not specified
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.results: list[CheckpointMetrics] = []
+        self.failed_checkpoints: list[tuple[Path, str]] = []
 
         if not self.run_dir.exists():
             raise FileNotFoundError(f"Run directory not found: {self.run_dir}")
@@ -180,6 +181,7 @@ class BatchCheckpointAnalyzer:
             print("-" * 60)
 
         self.results = []
+        self.failed_checkpoints = []
 
         for step, path in checkpoints:
             if verbose:
@@ -197,12 +199,16 @@ class BatchCheckpointAnalyzer:
                     print(f"{gate_info}, {ppl_info}")
 
             except Exception as e:
+                error_msg = f"{type(e).__name__}: {e}"
+                self.failed_checkpoints.append((path, error_msg))
                 if verbose:
-                    print(f"ERROR: {e}")
+                    print(f"ERROR: {path.name}: {error_msg}")
 
         if verbose:
             print("-" * 60)
             print(f"Analyzed {len(self.results)} checkpoints successfully")
+            if self.failed_checkpoints:
+                print(f"Failed: {len(self.failed_checkpoints)} checkpoints")
 
         return self.results
 
