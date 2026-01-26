@@ -6,15 +6,11 @@ Extracts metrics from each checkpoint to track model evolution over training.
 
 import json
 import re
-import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import torch
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 @dataclass
@@ -86,7 +82,13 @@ class BatchCheckpointAnalyzer:
         return sorted(checkpoints, key=lambda x: x[0])
 
     def analyze_checkpoint(self, checkpoint_path: Path, step: int) -> CheckpointMetrics:
-        """Extract metrics from a single checkpoint."""
+        """
+        Extract metrics from a single checkpoint.
+
+        Security note: Uses weights_only=False to load full checkpoint metadata
+        (config, val_loss, etc.). Only analyze checkpoints from trusted sources.
+        """
+        # weights_only=False required to load config/metadata, not just model weights
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         metrics = CheckpointMetrics(

@@ -9,10 +9,8 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from ..parsers.log_parser import TrainingMetrics
-
 
 # Style configuration for publication-quality plots
 STYLE_CONFIG = {
@@ -30,11 +28,11 @@ STYLE_CONFIG = {
 
 # Color palette for different runs
 COLORS = {
-    "primary": "#2E86AB",    # Blue
+    "primary": "#2E86AB",  # Blue
     "secondary": "#A23B72",  # Magenta
-    "tertiary": "#F18F01",   # Orange
-    "quaternary": "#C73E1D", # Red
-    "success": "#3A7D44",    # Green
+    "tertiary": "#F18F01",  # Orange
+    "quaternary": "#C73E1D",  # Red
+    "success": "#3A7D44",  # Green
 }
 
 
@@ -43,11 +41,19 @@ def _apply_style():
     plt.rcParams.update(STYLE_CONFIG)
 
 
-def _smooth(values: list, window: int = 10) -> np.ndarray:
-    """Apply moving average smoothing."""
-    if len(values) < window:
-        return np.array(values)
-    return np.convolve(values, np.ones(window) / window, mode="valid")
+def _smooth_with_steps(
+    steps: list[int], values: list[float], window: int = 10
+) -> tuple[list[int], np.ndarray]:
+    """
+    Apply moving average smoothing and return aligned steps.
+
+    Returns steps and smoothed values with matching lengths, handling
+    edge cases where len(values) < window.
+    """
+    if window <= 1 or len(values) < window:
+        return steps, np.array(values)
+    smoothed = np.convolve(values, np.ones(window) / window, mode="valid")
+    return steps[window - 1 :], smoothed
 
 
 def plot_training_curves(
@@ -75,12 +81,18 @@ def plot_training_curves(
 
     # Loss curve
     ax = axes[0, 0]
-    steps = metrics.steps[smooth_window - 1:] if smooth_window > 1 else metrics.steps
-    loss_smooth = _smooth(metrics.loss, smooth_window)
+    steps, loss_smooth = _smooth_with_steps(metrics.steps, metrics.loss, smooth_window)
     ax.plot(steps, loss_smooth, color=COLORS["primary"], label="Train Loss")
     if metrics.val_steps:
-        ax.scatter(metrics.val_steps, metrics.val_loss, color=COLORS["secondary"],
-                   s=50, zorder=5, label="Val Loss", marker="o")
+        ax.scatter(
+            metrics.val_steps,
+            metrics.val_loss,
+            color=COLORS["secondary"],
+            s=50,
+            zorder=5,
+            label="Val Loss",
+            marker="o",
+        )
     ax.set_xlabel("Step")
     ax.set_ylabel("Loss")
     ax.set_title("Loss")
@@ -88,11 +100,18 @@ def plot_training_curves(
 
     # PPL curve (log scale)
     ax = axes[0, 1]
-    ppl_smooth = _smooth(metrics.ppl, smooth_window)
-    ax.semilogy(steps, ppl_smooth, color=COLORS["primary"], label="Train PPL")
+    steps_ppl, ppl_smooth = _smooth_with_steps(metrics.steps, metrics.ppl, smooth_window)
+    ax.semilogy(steps_ppl, ppl_smooth, color=COLORS["primary"], label="Train PPL")
     if metrics.val_steps:
-        ax.scatter(metrics.val_steps, metrics.val_ppl, color=COLORS["secondary"],
-                   s=50, zorder=5, label="Val PPL", marker="o")
+        ax.scatter(
+            metrics.val_steps,
+            metrics.val_ppl,
+            color=COLORS["secondary"],
+            s=50,
+            zorder=5,
+            label="Val PPL",
+            marker="o",
+        )
     ax.set_xlabel("Step")
     ax.set_ylabel("Perplexity (log scale)")
     ax.set_title("Perplexity")
@@ -108,8 +127,8 @@ def plot_training_curves(
 
     # Gradient norm
     ax = axes[1, 1]
-    grad_smooth = _smooth(metrics.grad_norm, smooth_window)
-    ax.plot(steps, grad_smooth, color=COLORS["quaternary"])
+    steps_grad, grad_smooth = _smooth_with_steps(metrics.steps, metrics.grad_norm, smooth_window)
+    ax.plot(steps_grad, grad_smooth, color=COLORS["quaternary"])
     ax.set_xlabel("Step")
     ax.set_ylabel("Gradient Norm")
     ax.set_title("Gradient Norm")
@@ -151,14 +170,21 @@ def plot_loss_comparison(
 
     for i, (name, metrics) in enumerate(runs.items()):
         color = colors[i % len(colors)]
-        steps = metrics.steps[smooth_window - 1:] if smooth_window > 1 else metrics.steps
-        loss_smooth = _smooth(metrics.loss, smooth_window)
+        steps, loss_smooth = _smooth_with_steps(metrics.steps, metrics.loss, smooth_window)
 
         ax.plot(steps, loss_smooth, color=color, label=f"{name} (train)", alpha=0.8)
 
         if include_validation and metrics.val_steps:
-            ax.scatter(metrics.val_steps, metrics.val_loss, color=color,
-                       s=60, zorder=5, marker="o", edgecolors="white", linewidths=1)
+            ax.scatter(
+                metrics.val_steps,
+                metrics.val_loss,
+                color=color,
+                s=60,
+                zorder=5,
+                marker="o",
+                edgecolors="white",
+                linewidths=1,
+            )
 
     ax.set_xlabel("Step")
     ax.set_ylabel("Loss")
@@ -204,8 +230,7 @@ def plot_ppl_comparison(
 
     for i, (name, metrics) in enumerate(runs.items()):
         color = colors[i % len(colors)]
-        steps = metrics.steps[smooth_window - 1:] if smooth_window > 1 else metrics.steps
-        ppl_smooth = _smooth(metrics.ppl, smooth_window)
+        steps, ppl_smooth = _smooth_with_steps(metrics.steps, metrics.ppl, smooth_window)
 
         if log_scale:
             ax.semilogy(steps, ppl_smooth, color=color, label=f"{name} (train)", alpha=0.8)
@@ -213,8 +238,16 @@ def plot_ppl_comparison(
             ax.plot(steps, ppl_smooth, color=color, label=f"{name} (train)", alpha=0.8)
 
         if include_validation and metrics.val_steps:
-            ax.scatter(metrics.val_steps, metrics.val_ppl, color=color,
-                       s=60, zorder=5, marker="o", edgecolors="white", linewidths=1)
+            ax.scatter(
+                metrics.val_steps,
+                metrics.val_ppl,
+                color=color,
+                s=60,
+                zorder=5,
+                marker="o",
+                edgecolors="white",
+                linewidths=1,
+            )
 
     ax.set_xlabel("Step")
     ax.set_ylabel("Perplexity" + (" (log scale)" if log_scale else ""))
@@ -256,8 +289,9 @@ def plot_throughput(
 
     for i, (name, metrics) in enumerate(runs.items()):
         color = colors[i % len(colors)]
-        steps = metrics.steps[smooth_window - 1:] if smooth_window > 1 else metrics.steps
-        throughput_smooth = _smooth(metrics.tokens_per_sec, smooth_window)
+        steps, throughput_smooth = _smooth_with_steps(
+            metrics.steps, metrics.tokens_per_sec, smooth_window
+        )
 
         ax.plot(steps, throughput_smooth, color=color, label=name, alpha=0.8)
 
