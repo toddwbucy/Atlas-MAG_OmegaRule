@@ -127,6 +127,8 @@ def plot_gate_evolution(
     Returns:
         matplotlib Figure
     """
+    # Apply consistent styling for this visualization session.
+    # Note: Modifies global rcParams intentionally for plot consistency.
     plt.rcParams.update(STYLE_CONFIG)
 
     results = analyzer.results

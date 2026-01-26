@@ -4,17 +4,17 @@ Run comparison utilities.
 Provides tools for comparing multiple training runs and generating reports.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import json
 
 from ..parsers.log_parser import TrainingMetrics, parse_training_log
 from ..visualizations.training_curves import (
-    plot_training_curves,
     plot_loss_comparison,
     plot_ppl_comparison,
     plot_throughput,
+    plot_training_curves,
 )
 
 
@@ -52,8 +52,10 @@ class RunComparator:
         """Add a run to the comparison."""
         metrics = parse_training_log(log_path)
         self.runs[name] = metrics
-        print(f"Loaded '{name}': {len(metrics.steps)} steps, "
-              f"{metrics.steps[-1] if metrics.steps else 0} max step")
+        print(
+            f"Loaded '{name}': {len(metrics.steps)} steps, "
+            f"{metrics.steps[-1] if metrics.steps else 0} max step"
+        )
 
     def get_summary(self, name: str) -> RunSummary:
         """Get summary statistics for a run."""
@@ -62,9 +64,11 @@ class RunComparator:
 
         metrics = self.runs[name]
 
-        # Calculate statistics
-        best_val_loss = min(metrics.val_loss) if metrics.val_loss else None
-        best_val_ppl = min(metrics.val_ppl) if metrics.val_ppl else None
+        # Filter None values from lists that may contain them for alignment
+        val_losses = [v for v in metrics.val_loss if v is not None]
+        val_ppls = [v for v in metrics.val_ppl if v is not None]
+        throughput_vals = [v for v in metrics.tokens_per_sec if v is not None]
+        grad_vals = [v for v in metrics.grad_norm if v is not None]
 
         return RunSummary(
             name=name,
@@ -73,10 +77,10 @@ class RunComparator:
             total_tokens_m=metrics.tokens[-1] if metrics.tokens else 0,
             final_train_loss=metrics.loss[-1] if metrics.loss else float("inf"),
             final_train_ppl=metrics.ppl[-1] if metrics.ppl else float("inf"),
-            best_val_loss=best_val_loss,
-            best_val_ppl=best_val_ppl,
-            mean_throughput=sum(metrics.tokens_per_sec) / len(metrics.tokens_per_sec) if metrics.tokens_per_sec else 0,
-            mean_grad_norm=sum(metrics.grad_norm) / len(metrics.grad_norm) if metrics.grad_norm else 0,
+            best_val_loss=min(val_losses) if val_losses else None,
+            best_val_ppl=min(val_ppls) if val_ppls else None,
+            mean_throughput=sum(throughput_vals) / len(throughput_vals) if throughput_vals else 0,
+            mean_grad_norm=sum(grad_vals) / len(grad_vals) if grad_vals else 0,
         )
 
     def print_comparison_table(self) -> str:
@@ -101,14 +105,23 @@ class RunComparator:
 
         # Rows
         metrics_to_show = [
-            ("Config (dim/layers/heads)", lambda s: f"{s.config.get('dim', '?')}/{s.config.get('layers', '?')}/{s.config.get('heads', '?')}"),
+            (
+                "Config (dim/layers/heads)",
+                lambda s: f"{s.config.get('dim', '?')}/{s.config.get('layers', '?')}/{s.config.get('heads', '?')}",
+            ),
             ("Mode", lambda s: s.config.get("mode", "N/A")),
             ("Total Steps", lambda s: f"{s.total_steps:,}"),
             ("Total Tokens (M)", lambda s: f"{s.total_tokens_m:.1f}"),
             ("Final Train Loss", lambda s: f"{s.final_train_loss:.4f}"),
             ("Final Train PPL", lambda s: f"{s.final_train_ppl:.2f}"),
-            ("Best Val Loss", lambda s: f"{s.best_val_loss:.4f}" if s.best_val_loss else "N/A"),
-            ("Best Val PPL", lambda s: f"{s.best_val_ppl:.2f}" if s.best_val_ppl else "N/A"),
+            (
+                "Best Val Loss",
+                lambda s: f"{s.best_val_loss:.4f}" if s.best_val_loss is not None else "N/A",
+            ),
+            (
+                "Best Val PPL",
+                lambda s: f"{s.best_val_ppl:.2f}" if s.best_val_ppl is not None else "N/A",
+            ),
             ("Mean Throughput (tok/s)", lambda s: f"{s.mean_throughput:,.0f}"),
             ("Mean Grad Norm", lambda s: f"{s.mean_grad_norm:.2f}"),
         ]
@@ -127,7 +140,11 @@ class RunComparator:
             lines.append("\nKEY FINDINGS:")
 
             # Best validation PPL
-            valid_ppl = [(name, s.best_val_ppl) for name, s in summaries.items() if s.best_val_ppl is not None]
+            valid_ppl = [
+                (name, s.best_val_ppl)
+                for name, s in summaries.items()
+                if s.best_val_ppl is not None
+            ]
             if valid_ppl:
                 best_name, best_ppl = min(valid_ppl, key=lambda x: x[1])
                 lines.append(f"  - Best Val PPL: {best_name} ({best_ppl:.2f})")
@@ -138,7 +155,9 @@ class RunComparator:
             slowest_name, slowest_throughput = min(throughputs, key=lambda x: x[1])
             if fastest_throughput > 0 and slowest_throughput > 0:
                 ratio = fastest_throughput / slowest_throughput
-                lines.append(f"  - Throughput: {fastest_name} is {ratio:.2f}x faster than {slowest_name}")
+                lines.append(
+                    f"  - Throughput: {fastest_name} is {ratio:.2f}x faster than {slowest_name}"
+                )
 
         output = "\n".join(lines)
         print(output)
@@ -225,12 +244,12 @@ class RunComparator:
 
         print("-" * 50)
         print(f"Comparison complete! Outputs saved to {output_dir}/")
-        print(f"  - loss_comparison.png")
-        print(f"  - ppl_comparison.png")
-        print(f"  - throughput_comparison.png")
-        print(f"  - curves_*.png (per run)")
-        print(f"  - comparison_report.txt")
-        print(f"  - comparison_data.json")
+        print("  - loss_comparison.png")
+        print("  - ppl_comparison.png")
+        print("  - throughput_comparison.png")
+        print("  - curves_*.png (per run)")
+        print("  - comparison_report.txt")
+        print("  - comparison_data.json")
 
 
 def compare_runs(

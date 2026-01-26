@@ -59,23 +59,27 @@ def cmd_summary(args):
     if metrics.config:
         print(f"\nConfig: {metrics.config}")
 
-    print(f"\nTraining Progress:")
+    print("\nTraining Progress:")
     print(f"  Total steps: {metrics.steps[-1] if metrics.steps else 0:,}")
     print(f"  Total tokens: {metrics.tokens[-1] if metrics.tokens else 0:.1f}M")
 
-    print(f"\nFinal Metrics:")
-    print(f"  Train Loss: {metrics.loss[-1] if metrics.loss else 'N/A':.4f}")
-    print(f"  Train PPL:  {metrics.ppl[-1] if metrics.ppl else 'N/A':.2f}")
+    # Format metrics safely - avoid applying format specifiers to 'N/A' strings
+    train_loss = f"{metrics.loss[-1]:.4f}" if metrics.loss else "N/A"
+    train_ppl = f"{metrics.ppl[-1]:.2f}" if metrics.ppl else "N/A"
+
+    print("\nFinal Metrics:")
+    print(f"  Train Loss: {train_loss}")
+    print(f"  Train PPL:  {train_ppl}")
 
     if metrics.val_loss:
-        print(f"\nValidation:")
+        print("\nValidation:")
         print(f"  Best Val Loss: {min(metrics.val_loss):.4f}")
         print(f"  Best Val PPL:  {min(metrics.val_ppl):.2f}")
         print(f"  Validation points: {len(metrics.val_loss)}")
 
     if metrics.tokens_per_sec:
         mean_throughput = sum(metrics.tokens_per_sec) / len(metrics.tokens_per_sec)
-        print(f"\nThroughput:")
+        print("\nThroughput:")
         print(f"  Mean: {mean_throughput:,.0f} tok/s")
         print(f"  Min:  {min(metrics.tokens_per_sec):,} tok/s")
         print(f"  Max:  {max(metrics.tokens_per_sec):,} tok/s")
@@ -113,7 +117,8 @@ Examples:
         help="Log files to compare",
     )
     compare_parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         required=True,
         help="Output directory for comparison",
     )
@@ -135,7 +140,8 @@ Examples:
         help="Log file to analyze",
     )
     report_parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         required=True,
         help="Output directory for report",
     )
