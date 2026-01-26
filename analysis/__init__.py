@@ -9,6 +9,7 @@ Submodules:
     parsers: Log file parsing utilities
     visualizations: Plotting and charting tools
     comparisons: Multi-run comparison utilities
+    checkpoints: Checkpoint evolution analysis tools
 """
 
 __version__ = "0.1.0"

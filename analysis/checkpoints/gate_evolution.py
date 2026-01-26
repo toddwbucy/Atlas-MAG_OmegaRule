@@ -10,8 +10,7 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .batch_analyzer import BatchCheckpointAnalyzer, CheckpointMetrics
-
+from .batch_analyzer import BatchCheckpointAnalyzer
 
 # Style configuration
 STYLE_CONFIG = {
@@ -48,17 +47,23 @@ class GateEvolutionTracker:
         if not self.results:
             return {}
 
-        steps, means = self.analyzer.get_metric_series("gate_mean")
+        _steps, means = self.analyzer.get_metric_series("gate_mean")
         _, stds = self.analyzer.get_metric_series("gate_std")
+
+        # Determine polarization trend
+        if stds and len(stds) >= 2:
+            polarization_trend = "increasing" if stds[-1] > stds[0] else "decreasing"
+        else:
+            polarization_trend = None
 
         return {
             "initial_mean": means[0] if means else None,
             "final_mean": means[-1] if means else None,
             "initial_std": stds[0] if stds else None,
             "final_std": stds[-1] if stds else None,
-            "mean_change": (means[-1] - means[0]) if means else None,
-            "std_change": (stds[-1] - stds[0]) if stds else None,
-            "polarization_trend": "increasing" if stds and stds[-1] > stds[0] else "decreasing",
+            "mean_change": (means[-1] - means[0]) if len(means) >= 2 else None,
+            "std_change": (stds[-1] - stds[0]) if len(stds) >= 2 else None,
+            "polarization_trend": polarization_trend,
         }
 
     def print_summary(self) -> None:
@@ -73,22 +78,26 @@ class GateEvolutionTracker:
             print("No gate data available")
             return
 
+        # Helper to format values safely
+        def fmt(val, spec=".4f"):
+            return f"{val:{spec}}" if val is not None else "N/A"
+
         print(f"\nInitial State (step {self.results[0].step:,}):")
-        print(f"  Mean: {stats['initial_mean']:.4f}")
-        print(f"  Std:  {stats['initial_std']:.4f}")
+        print(f"  Mean: {fmt(stats['initial_mean'])}")
+        print(f"  Std:  {fmt(stats['initial_std'])}")
 
         print(f"\nFinal State (step {self.results[-1].step:,}):")
-        print(f"  Mean: {stats['final_mean']:.4f}")
-        print(f"  Std:  {stats['final_std']:.4f}")
+        print(f"  Mean: {fmt(stats['final_mean'])}")
+        print(f"  Std:  {fmt(stats['final_std'])}")
 
-        print(f"\nEvolution:")
-        print(f"  Mean change: {stats['mean_change']:+.4f}")
-        print(f"  Std change:  {stats['std_change']:+.4f}")
-        print(f"  Polarization: {stats['polarization_trend']}")
+        print("\nEvolution:")
+        print(f"  Mean change: {fmt(stats['mean_change'], '+.4f')}")
+        print(f"  Std change:  {fmt(stats['std_change'], '+.4f')}")
+        print(f"  Polarization: {stats['polarization_trend'] or 'N/A'}")
 
         # Per-layer final values
         if self.results[-1].gate_values:
-            print(f"\nFinal Per-Layer Gate Values:")
+            print("\nFinal Per-Layer Gate Values:")
             for i, val in enumerate(self.results[-1].gate_values):
                 direction = "MEMORY" if val > 0.5 else "ATTENTION"
                 bar_len = int(val * 30)
@@ -149,18 +158,35 @@ def plot_gate_evolution(
     # Panel 2: Mean and Std evolution
     ax2 = fig.add_subplot(gs[0, 1])
 
-    steps, means = analyzer.get_metric_series("gate_mean")
-    _, stds = analyzer.get_metric_series("gate_std")
+    mean_steps, means = analyzer.get_metric_series("gate_mean")
+    std_steps, stds = analyzer.get_metric_series("gate_std")
 
-    ax2.plot(steps, means, color="blue", label="Mean", linewidth=2)
-    ax2.fill_between(
-        steps,
-        [m - s for m, s in zip(means, stds)],
-        [m + s for m, s in zip(means, stds)],
-        alpha=0.3,
-        color="blue",
-        label="±1 Std",
-    )
+    # Align series by common steps to avoid length mismatch
+    if means and stds:
+        # Build step->value mappings
+        mean_map = dict(zip(mean_steps, means))
+        std_map = dict(zip(std_steps, stds))
+
+        # Get common steps (intersection), sorted
+        common_steps = sorted(set(mean_steps) & set(std_steps))
+
+        if common_steps:
+            aligned_means = [mean_map[s] for s in common_steps]
+            aligned_stds = [std_map[s] for s in common_steps]
+
+            ax2.plot(common_steps, aligned_means, color="blue", label="Mean", linewidth=2)
+            ax2.fill_between(
+                common_steps,
+                [m - s for m, s in zip(aligned_means, aligned_stds)],
+                [m + s for m, s in zip(aligned_means, aligned_stds)],
+                alpha=0.3,
+                color="blue",
+                label="±1 Std",
+            )
+    elif means:
+        # Only means available, no std fill
+        ax2.plot(mean_steps, means, color="blue", label="Mean", linewidth=2)
+
     ax2.axhline(y=0.5, color="red", linestyle="--", alpha=0.5, label="Balanced")
     ax2.set_xlabel("Step")
     ax2.set_ylabel("Gate Value")
@@ -199,6 +225,7 @@ def plot_gate_evolution(
 
     # Add legend for colors
     from matplotlib.patches import Patch
+
     legend_elements = [
         Patch(facecolor="#2E86AB", label="Attention-dominant (<0.5)"),
         Patch(facecolor="#A23B72", label="Memory-dominant (>0.5)"),
@@ -226,7 +253,7 @@ def plot_gate_evolution(
         n_ticks = min(10, len(steps_list))
         tick_indices = np.linspace(0, len(steps_list) - 1, n_ticks, dtype=int)
         ax4.set_xticks(tick_indices)
-        ax4.set_xticklabels([f"{steps_list[i]//1000}K" for i in tick_indices])
+        ax4.set_xticklabels([f"{steps_list[i] // 1000}K" for i in tick_indices])
         ax4.set_yticks(range(gate_matrix.shape[1]))
         ax4.set_yticklabels([f"L{i}" for i in range(gate_matrix.shape[1])])
 

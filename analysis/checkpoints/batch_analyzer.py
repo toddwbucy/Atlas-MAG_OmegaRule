@@ -7,7 +7,7 @@ Extracts metrics from each checkpoint to track model evolution over training.
 import json
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -59,9 +59,10 @@ class BatchCheckpointAnalyzer:
     # Pattern to extract step number from checkpoint filename
     STEP_PATTERN = re.compile(r"checkpoint_step(\d+)\.pt")
 
-    def __init__(self, run_dir: str | Path, device: str = "cuda"):
+    def __init__(self, run_dir: str | Path, device: str | None = None):
         self.run_dir = Path(run_dir)
-        self.device = device
+        # Auto-detect CUDA availability if device not specified
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.results: list[CheckpointMetrics] = []
 
         if not self.run_dir.exists():
@@ -164,7 +165,7 @@ class BatchCheckpointAnalyzer:
             return 0.0
         mean = sum(values) / len(values)
         variance = sum((x - mean) ** 2 for x in values) / len(values)
-        return variance ** 0.5
+        return variance**0.5
 
     def analyze_all(self, verbose: bool = True) -> list[CheckpointMetrics]:
         """Analyze all checkpoints in the run directory."""
@@ -189,7 +190,9 @@ class BatchCheckpointAnalyzer:
                 self.results.append(metrics)
 
                 if verbose:
-                    gate_info = f"gate_mean={metrics.gate_mean:.4f}" if metrics.gate_values else "no gates"
+                    gate_info = (
+                        f"gate_mean={metrics.gate_mean:.4f}" if metrics.gate_values else "no gates"
+                    )
                     ppl_info = f"val_ppl={metrics.val_ppl:.2f}" if metrics.val_ppl else "no val"
                     print(f"{gate_info}, {ppl_info}")
 
@@ -258,7 +261,7 @@ class BatchCheckpointAnalyzer:
 def analyze_checkpoint_series(
     run_dir: str | Path,
     output_dir: str | Path,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> BatchCheckpointAnalyzer:
     """
     Convenience function to analyze a checkpoint series and save results.

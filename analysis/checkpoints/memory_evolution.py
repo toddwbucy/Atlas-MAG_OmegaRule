@@ -10,8 +10,7 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .batch_analyzer import BatchCheckpointAnalyzer, CheckpointMetrics
-
+from .batch_analyzer import BatchCheckpointAnalyzer
 
 # Style configuration
 STYLE_CONFIG = {
@@ -63,7 +62,9 @@ class MemoryEvolutionTracker:
         last = memory_checkpoints[-1]
 
         # Calculate total parameter norms
-        first_param_total = sum(first.memory_param_norms.values()) if first.memory_param_norms else 0
+        first_param_total = (
+            sum(first.memory_param_norms.values()) if first.memory_param_norms else 0
+        )
         last_param_total = sum(last.memory_param_norms.values()) if last.memory_param_norms else 0
 
         # Calculate total momentum norms
@@ -79,9 +80,7 @@ class MemoryEvolutionTracker:
             "final_param_norm": last_param_total,
             "param_norm_change": last_param_total - first_param_total,
             "param_norm_growth_pct": (
-                (last_param_total / first_param_total - 1) * 100
-                if first_param_total > 0
-                else 0
+                (last_param_total / first_param_total - 1) * 100 if first_param_total > 0 else 0
             ),
             "initial_momentum_norm": first_momentum_total,
             "final_momentum_norm": last_momentum_total,
@@ -105,28 +104,31 @@ class MemoryEvolutionTracker:
         print(f"\nAnalyzed {stats['num_checkpoints']} checkpoints with memory")
         print(f"Steps: {stats['initial_step']:,} -> {stats['final_step']:,}")
 
-        print(f"\nParameter Norms:")
+        print("\nParameter Norms:")
         print(f"  Initial: {stats['initial_param_norm']:.4f}")
         print(f"  Final:   {stats['final_param_norm']:.4f}")
-        print(f"  Change:  {stats['param_norm_change']:+.4f} ({stats['param_norm_growth_pct']:+.1f}%)")
+        print(
+            f"  Change:  {stats['param_norm_change']:+.4f} ({stats['param_norm_growth_pct']:+.1f}%)"
+        )
 
         if stats["num_momentum_keys"] > 0:
-            print(f"\nMomentum Norms (TTL):")
+            print("\nMomentum Norms (TTL):")
             print(f"  Initial: {stats['initial_momentum_norm']:.4f}")
             print(f"  Final:   {stats['final_momentum_norm']:.4f}")
             print(f"  Change:  {stats['momentum_norm_change']:+.4f}")
 
-        print(f"\nTracked Parameters:")
+        print("\nTracked Parameters:")
         print(f"  Memory params: {stats['num_param_keys']} tensors")
         print(f"  Momentum buffers: {stats['num_momentum_keys']} tensors")
 
         # Per-key breakdown for final checkpoint
         last = self.results[-1]
         if last.memory_param_norms:
-            print(f"\nFinal Memory Parameter Norms:")
+            print("\nFinal Memory Parameter Norms:")
             for key, norm in sorted(last.memory_param_norms.items()):
-                # Shorten key for display
-                short_key = key.split(".")[-2] + "." + key.split(".")[-1]
+                # Shorten key for display (handle short keys gracefully)
+                parts = key.split(".")
+                short_key = ".".join(parts[-2:]) if len(parts) >= 2 else key
                 print(f"  {short_key}: {norm:.4f}")
 
     def get_norm_series(self) -> dict[str, tuple[list[int], list[float]]]:
@@ -220,7 +222,9 @@ def plot_memory_evolution(
     ax1 = fig.add_subplot(gs[0, 0])
 
     steps, values = series["total_param_norm"]
-    ax1.plot(steps, values, color=MEMORY_COLORS["param_norm"], linewidth=2, label="Total Param Norm")
+    ax1.plot(
+        steps, values, color=MEMORY_COLORS["param_norm"], linewidth=2, label="Total Param Norm"
+    )
 
     ax1.set_xlabel("Step")
     ax1.set_ylabel("L2 Norm")
@@ -232,27 +236,40 @@ def plot_memory_evolution(
 
     steps, values = series["total_momentum_norm"]
     if any(v > 0 for v in values):
-        ax2.plot(steps, values, color=MEMORY_COLORS["momentum_norm"], linewidth=2, label="Total Momentum Norm")
+        ax2.plot(
+            steps,
+            values,
+            color=MEMORY_COLORS["momentum_norm"],
+            linewidth=2,
+            label="Total Momentum Norm",
+        )
         ax2.set_title("Total Momentum Buffer Norm (TTL)")
+        ax2.legend()  # Only show legend when plot is drawn
     else:
         ax2.text(
-            0.5, 0.5, "No momentum buffers\n(non-TTL model)",
-            ha="center", va="center", fontsize=14, color="gray",
-            transform=ax2.transAxes
+            0.5,
+            0.5,
+            "No momentum buffers\n(non-TTL model)",
+            ha="center",
+            va="center",
+            fontsize=14,
+            color="gray",
+            transform=ax2.transAxes,
         )
         ax2.set_title("Momentum Buffers")
 
     ax2.set_xlabel("Step")
     ax2.set_ylabel("L2 Norm")
-    ax2.legend()
 
     # Panel 3: Per-layer breakdown (stacked area or lines)
     ax3 = fig.add_subplot(gs[1, 0])
 
     # Get individual parameter keys (filter out totals and momentum)
-    param_keys = [k for k in series.keys()
-                  if k not in ("total_param_norm", "total_momentum_norm")
-                  and "momentum" not in k.lower()]
+    param_keys = [
+        k
+        for k in series.keys()
+        if k not in ("total_param_norm", "total_momentum_norm") and "momentum" not in k.lower()
+    ]
 
     if param_keys:
         colors = plt.cm.viridis(np.linspace(0, 1, len(param_keys)))
@@ -269,9 +286,14 @@ def plot_memory_evolution(
         ax3.legend(loc="upper left", ncol=2, fontsize=7)
     else:
         ax3.text(
-            0.5, 0.5, "No per-component data",
-            ha="center", va="center", fontsize=14, color="gray",
-            transform=ax3.transAxes
+            0.5,
+            0.5,
+            "No per-component data",
+            ha="center",
+            va="center",
+            fontsize=14,
+            color="gray",
+            transform=ax3.transAxes,
         )
 
     # Panel 4: Growth rate / stability analysis
@@ -305,12 +327,20 @@ def plot_memory_evolution(
 
             # Add annotation about stability
             final_rate = growth_rates[-1] if growth_rates else 0
-            stability = "Stable" if abs(final_rate) < 0.01 else ("Growing" if final_rate > 0 else "Shrinking")
+            stability = (
+                "Stable"
+                if abs(final_rate) < 0.01
+                else ("Growing" if final_rate > 0 else "Shrinking")
+            )
             ax4.text(
-                0.95, 0.95, f"Final trend: {stability}",
-                ha="right", va="top", fontsize=10,
+                0.95,
+                0.95,
+                f"Final trend: {stability}",
+                ha="right",
+                va="top",
+                fontsize=10,
                 transform=ax4.transAxes,
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5)
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
             )
 
     plt.tight_layout()
