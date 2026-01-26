@@ -219,8 +219,10 @@ class TestAtlasMAGBlock:
         """Block forward should work."""
         block = AtlasMAGBlock(dim=D, n_heads=12)
         x = torch.randn(2, 512, D)
-        y = block(x)
+        y, ttl_stats = block(x)
         assert y.shape == x.shape
+        # TTL stats should be returned when TTL is enabled
+        assert ttl_stats is not None or not block.ttl_enabled
 
     def test_gate_value(self):
         """Gate should be accessible with per-layer initialization."""

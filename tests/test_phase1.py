@@ -252,29 +252,29 @@ class TestMultiplicativeFusion:
 
     def test_gate_zero_uses_attention(self):
         """When gate=0, output should equal pure attention output."""
-        block = AtlasMAGBlock(dim=128, n_heads=4)
+        block = AtlasMAGBlock(dim=128, n_heads=4, ttl_enabled=False)
         x = torch.randn(1, 32, 128)
 
         with torch.no_grad():
             # Force gate to 0
             block.memory_gate.data.fill_(-100)
-            output_gate0 = block(x.clone())
+            output_gate0, _ = block(x.clone())
 
             # Force gate to 1
             block.memory_gate.data.fill_(100)
-            output_gate1 = block(x.clone())
+            output_gate1, _ = block(x.clone())
 
         # Outputs should be different
         assert not torch.allclose(output_gate0, output_gate1, atol=1e-5)
 
     def test_gate_one_uses_memory(self):
         """When gate=1, memory should contribute."""
-        block = AtlasMAGBlock(dim=128, n_heads=4)
+        block = AtlasMAGBlock(dim=128, n_heads=4, ttl_enabled=False)
         x = torch.randn(1, 32, 128)
 
         with torch.no_grad():
             block.memory_gate.data.fill_(100)  # gate -> 1
-            output = block(x)
+            output, _ = block(x)
 
         # Output should differ from input (memory adds something)
         assert not torch.allclose(x, output, atol=1e-3)
