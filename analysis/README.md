@@ -17,7 +17,7 @@ The analysis tools use these dependencies (add to your project's pyproject.toml)
 ```toml
 [tool.poetry.dependencies]
 pandas = "^2.0"
-matplotlib = "^3.7"
+matplotlib = ">=3.10.8,<4.0.0"
 ```
 
 ## Quick Start
@@ -68,7 +68,7 @@ comparator.generate_comparison("output/comparison")
 
 ## Package Structure
 
-```
+```text
 analysis/
 ├── __init__.py              # Package metadata
 ├── cli.py                   # Command-line interface
@@ -79,22 +79,27 @@ analysis/
 ├── visualizations/
 │   ├── __init__.py
 │   └── training_curves.py   # Plotting utilities
-└── comparisons/
+├── comparisons/
+│   ├── __init__.py
+│   └── run_comparator.py    # Multi-run comparison
+└── checkpoints/
     ├── __init__.py
-    └── run_comparator.py    # Multi-run comparison
+    ├── batch_analyzer.py    # Checkpoint series analysis
+    ├── gate_evolution.py    # Gate tracking/visualization
+    └── memory_evolution.py  # Memory metrics tracking
 ```
 
 ## Supported Log Formats
 
 ### Atlas-MAG Format (default)
 
-```
+```text
 [Epoch 1/3] Step 100 | Tokens: 1.6M | LM Loss: 10.4500 | Polar: 2.7497 | PPL: 34546.05 | LR: 8.19e-08 | GradNorm: 5.96 | Gate std: 0.0838 | Tok/s: 20555
 ```
 
 ### Validation Lines
 
-```
+```text
 [Validation] Loss: 3.3593, PPL: 28.77, Train/Val Gap: 0.83x
 ```
 

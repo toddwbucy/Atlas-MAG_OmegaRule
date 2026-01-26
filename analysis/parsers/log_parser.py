@@ -8,7 +8,6 @@ Designed to be extensible for different log formats.
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -49,21 +48,24 @@ class TrainingMetrics:
             "tokens_per_sec": self.tokens_per_sec,
         }
 
-        # Add optional columns if present
-        if self.polarization:
+        # Add optional columns if they contain any non-None values
+        # (None values will be converted to NaN by pandas)
+        if any(v is not None for v in self.polarization):
             data["polarization"] = self.polarization
-        if self.gate_std:
+        if any(v is not None for v in self.gate_std):
             data["gate_std"] = self.gate_std
 
         return pd.DataFrame(data)
 
     def val_to_dataframe(self) -> pd.DataFrame:
         """Convert validation metrics to pandas DataFrame."""
-        return pd.DataFrame({
-            "step": self.val_steps,
-            "val_loss": self.val_loss,
-            "val_ppl": self.val_ppl,
-        })
+        return pd.DataFrame(
+            {
+                "step": self.val_steps,
+                "val_loss": self.val_loss,
+                "val_ppl": self.val_ppl,
+            }
+        )
 
 
 class LogParser:
@@ -92,21 +94,15 @@ class LogParser:
 
     # Validation pattern
     # Example: [Validation] Loss: 3.3593, PPL: 28.77, Train/Val Gap: 0.83x
-    VAL_PATTERN = re.compile(
-        r"\[Validation\]\s*Loss:\s*([\d.]+),\s*PPL:\s*([\d.]+)"
-    )
+    VAL_PATTERN = re.compile(r"\[Validation\]\s*Loss:\s*([\d.]+),\s*PPL:\s*([\d.]+)")
 
     # Config pattern
     # Example: Config: dim=512, layers=6, heads=8
-    CONFIG_PATTERN = re.compile(
-        r"Config:\s*dim=(\d+),\s*layers=(\d+),\s*heads=(\d+)"
-    )
+    CONFIG_PATTERN = re.compile(r"Config:\s*dim=(\d+),\s*layers=(\d+),\s*heads=(\d+)")
 
     # Mode pattern
     # Example: Mode: MEMORY+ATTENTION or Mode: ATTENTION-ONLY (ablation)
-    MODE_PATTERN = re.compile(
-        r"Mode:\s*([\w+-]+(?:\s*\([^)]+\))?)"
-    )
+    MODE_PATTERN = re.compile(r"Mode:\s*([\w+-]+(?:\s*\([^)]+\))?)")
 
     def __init__(self):
         self.metrics = TrainingMetrics()
@@ -158,26 +154,27 @@ class LogParser:
             self.metrics.tokens.append(float(step_match.group(2)))
             self.metrics.loss.append(float(step_match.group(3)))
 
-            # Polarization (optional)
+            # Polarization (optional) - always append to keep aligned with steps
             polar = step_match.group(4)
-            if polar:
-                self.metrics.polarization.append(float(polar))
+            self.metrics.polarization.append(float(polar) if polar else None)
 
             self.metrics.ppl.append(float(step_match.group(5)))
             self.metrics.lr.append(float(step_match.group(6)))
             self.metrics.grad_norm.append(float(step_match.group(7)))
 
-            # Gate std (optional, may be "N/A")
+            # Gate std (optional, may be "N/A") - always append to keep aligned
             gate_std = step_match.group(8)
             if gate_std and gate_std != "N/A":
                 self.metrics.gate_std.append(float(gate_std))
+            else:
+                self.metrics.gate_std.append(None)
 
             self.metrics.tokens_per_sec.append(int(step_match.group(9)))
             return
 
-        # Try validation pattern
+        # Try validation pattern (allow step 0)
         val_match = self.VAL_PATTERN.search(line)
-        if val_match and self._last_step > 0:
+        if val_match and self._last_step >= 0:
             self.metrics.val_steps.append(self._last_step)
             self.metrics.val_loss.append(float(val_match.group(1)))
             self.metrics.val_ppl.append(float(val_match.group(2)))

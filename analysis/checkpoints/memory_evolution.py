@@ -200,6 +200,8 @@ def plot_memory_evolution(
     Returns:
         matplotlib Figure (or None if no memory data)
     """
+    # Apply consistent styling for this visualization session.
+    # Note: Modifies global rcParams intentionally for plot consistency.
     plt.rcParams.update(STYLE_CONFIG)
 
     results = analyzer.results
