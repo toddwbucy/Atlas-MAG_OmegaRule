@@ -46,6 +46,7 @@ from src.data.smollm_dataset import (
 )
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
+from src.training.gate_monitor import GateMonitor
 from src.training.polarization import compute_gate_statistics, gate_polarization_loss
 from src.utils.logging import get_logger, setup_logging
 
@@ -87,7 +88,11 @@ class TrainingConfig:
         default_factory=lambda: ["cosmopedia-v2", "fineweb-edu-dedup", "python-edu-cleaned"]
     )
     subset_weights: dict[str, float] = field(
-        default_factory=lambda: {"cosmopedia-v2": 0.4, "fineweb-edu-dedup": 0.5, "python-edu-cleaned": 0.1}
+        default_factory=lambda: {
+            "cosmopedia-v2": 0.4,
+            "fineweb-edu-dedup": 0.5,
+            "python-edu-cleaned": 0.1,
+        }
     )
     num_workers: int = 4
     val_samples: int = 2000  # Much larger than Dolmino's 127!
@@ -163,7 +168,9 @@ def train(config: TrainingConfig):
     logger.info("=" * 70)
     logger.info(f"Config: dim={config.dim}, layers={config.n_layers}, heads={config.n_heads}")
     effective_batch = config.batch_size * config.gradient_accumulation_steps
-    logger.info(f"Training: batch={config.batch_size} x {config.gradient_accumulation_steps} accum = {effective_batch} effective, seq_len={config.seq_len}, epochs={config.epochs}")
+    logger.info(
+        f"Training: batch={config.batch_size} x {config.gradient_accumulation_steps} accum = {effective_batch} effective, seq_len={config.seq_len}, epochs={config.epochs}"
+    )
     logger.info(f"Data subsets: {config.subsets}")
     logger.info(f"Subset weights: {config.subset_weights}")
     logger.info(f"Validation samples: {config.val_samples}")
@@ -194,7 +201,9 @@ def train(config: TrainingConfig):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     mode = "ATTENTION-ONLY (ablation)" if config.disable_memory else "MEMORY+ATTENTION"
-    logger.info(f"Model: {total_params / 1e6:.1f}M total params, {trainable_params / 1e6:.1f}M trainable")
+    logger.info(
+        f"Model: {total_params / 1e6:.1f}M total params, {trainable_params / 1e6:.1f}M trainable"
+    )
     logger.info(f"Mode: {mode}")
 
     # Create data loaders
@@ -220,7 +229,9 @@ def train(config: TrainingConfig):
     logger.info("Running initial validation...")
     init_val = run_validation(model, val_loader, config.device)
     logger.info(f"Initial validation: Loss={init_val['loss']:.4f}, PPL={init_val['ppl']:.2f}")
-    logger.info(f"  Validation set: {init_val['num_batches']} batches, {init_val['num_tokens']} tokens")
+    logger.info(
+        f"  Validation set: {init_val['num_batches']} batches, {init_val['num_tokens']} tokens"
+    )
 
     # Estimate total steps (account for gradient accumulation)
     # SmolLM is ~237M samples, each ~800 tokens average
@@ -240,14 +251,47 @@ def train(config: TrainingConfig):
     logger.info(f"Warmup steps: {warmup_steps}")
 
     # Optimizer and scheduler
+    # CRITICAL: Exclude memory parameters from AdamW to prevent optimizer mismatch.
+    # Memory is updated via TTL (Test-Time Learning) which uses Newton-Schulz
+    # orthogonalization - the correct optimizer for memory's non-convex landscape.
+    # AdamW (first-order) treats memory gradients as noise and collapses gates.
+    memory_params: list[nn.Parameter] = []  # For zeroing gradients after backward
+    if config.disable_memory:
+        # No memory to exclude
+        optimizer_params = list(model.parameters())
+        logger.info("Optimizer: AdamW for all parameters (memory disabled)")
+    else:
+        # Collect memory parameters to exclude from AdamW
+        # We need both IDs (for filtering) and the params themselves (for zeroing grads)
+        memory_param_ids: set[int] = set()
+        for block in model.blocks:
+            for p in block.memory.parameters():
+                memory_param_ids.add(id(p))
+                memory_params.append(p)
+
+        # Separate parameters: AdamW handles non-memory, TTL handles memory
+        optimizer_params = [p for p in model.parameters() if id(p) not in memory_param_ids]
+        n_adamw_params = sum(p.numel() for p in optimizer_params)
+        n_memory_params = sum(p.numel() for p in memory_params)
+        logger.info(
+            f"Optimizer: AdamW for {n_adamw_params / 1e6:.1f}M params "
+            f"(excluding {n_memory_params / 1e6:.1f}M memory params, handled by TTL)"
+        )
+
     optimizer = AdamW(
-        model.parameters(),
+        optimizer_params,
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
         betas=(0.9, 0.95),
     )
 
     scheduler = get_lr_schedule(optimizer, warmup_steps, est_steps)
+
+    # Initialize gate monitor for early detection of gate collapse
+    gate_monitor: GateMonitor | None = None
+    if not config.disable_memory:
+        gate_monitor = GateMonitor()
+        logger.info("GateMonitor enabled: tracking gate health at steps 100, 500")
 
     # Training loop
     logger.info("Starting training...")
@@ -302,6 +346,14 @@ def train(config: TrainingConfig):
             # Backward pass (accumulates gradients)
             total_loss.backward()
 
+            # Zero memory gradients immediately after backward.
+            # Memory params receive gradients from LM loss, but these are never used
+            # (TTL handles memory updates separately via omega_loss). Without zeroing,
+            # these orphaned gradients accumulate indefinitely and inflate clip_grad_norm_.
+            for p in memory_params:
+                if p.grad is not None:
+                    p.grad.zero_()
+
             # Track stats for this micro-batch
             batch_tokens = labels.numel()
             accum_lm_loss += lm_loss.item() * batch_tokens
@@ -312,8 +364,8 @@ def train(config: TrainingConfig):
 
             # Only step optimizer after accumulation is complete
             if micro_step % accum_steps == 0:
-                # Gradient clipping
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                # Gradient clipping (only optimizer-managed params, not memory)
+                grad_norm = nn.utils.clip_grad_norm_(optimizer_params, config.grad_clip)
 
                 # Optimizer step
                 optimizer.step()
@@ -335,6 +387,19 @@ def train(config: TrainingConfig):
                 accum_polar_loss = 0.0
                 accum_tokens = 0
 
+                # Gate health monitoring (every step when memory enabled)
+                # GateMonitor.check() handles step 100/500 checks internally
+                if gate_monitor is not None:
+                    gate_values_tensor = torch.tensor(model.get_gate_values())
+                    monitor_stats = gate_monitor.check(gate_values_tensor, global_step)
+
+                    # Log warning if variance check failed at step 500
+                    if monitor_stats.get("variance_check_passed") is False:
+                        logger.warning(
+                            f"[Step {global_step}] GATE HEALTH WARNING: "
+                            f"Variance check failed - gates may be collapsing!"
+                        )
+
                 # Logging (only after optimizer step)
                 if global_step % config.log_every == 0 and global_step > 0:
                     elapsed = time.time() - start_time
@@ -342,9 +407,11 @@ def train(config: TrainingConfig):
 
                     if config.disable_memory:
                         gate_std_str = "N/A"
+                        gate_mean_str = "N/A"
                     else:
                         gate_stats = compute_gate_statistics(torch.tensor(model.get_gate_values()))
                         gate_std_str = f"{gate_stats['std']:.4f}"
+                        gate_mean_str = f"{gate_stats['mean']:.3f}"
 
                     logger.info(
                         f"[Epoch {epoch + 1}/{config.epochs}] "
@@ -355,7 +422,7 @@ def train(config: TrainingConfig):
                         f"PPL: {math.exp(min(lm_loss_for_log, 20)):.2f} | "
                         f"LR: {scheduler.get_last_lr()[0]:.2e} | "
                         f"GradNorm: {grad_norm:.2f} | "
-                        f"Gate std: {gate_std_str} | "
+                        f"Gate: {gate_mean_str}±{gate_std_str} | "
                         f"Tok/s: {tokens_per_sec:.0f}"
                     )
 
@@ -417,7 +484,9 @@ def train(config: TrainingConfig):
     # Final validation
     logger.info("=" * 70)
     final_metrics = run_validation(model, val_loader, config.device)
-    logger.info(f"Final Validation: Loss={final_metrics['loss']:.4f}, PPL={final_metrics['ppl']:.2f}")
+    logger.info(
+        f"Final Validation: Loss={final_metrics['loss']:.4f}, PPL={final_metrics['ppl']:.2f}"
+    )
     logger.info(f"Best Validation PPL: {best_val_ppl:.2f}")
 
     # Save final model
@@ -471,7 +540,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--seq-len", type=int, default=512, help="Sequence length")
-    parser.add_argument("--max-steps", type=int, default=None, help="Max training steps (for quick tests)")
+    parser.add_argument(
+        "--max-steps", type=int, default=None, help="Max training steps (for quick tests)"
+    )
     parser.add_argument(
         "--gradient-accumulation-steps",
         type=int,
@@ -502,7 +573,9 @@ def main():
     )
 
     # Other
-    parser.add_argument("--output-dir", type=str, default="runs/smollm_195m", help="Output directory")
+    parser.add_argument(
+        "--output-dir", type=str, default="runs/smollm_195m", help="Output directory"
+    )
     parser.add_argument(
         "--tokenizer",
         type=str,
@@ -525,7 +598,9 @@ def main():
     parser.add_argument("--val-every", type=int, default=200, help="Validation frequency")
     parser.add_argument("--save-every", type=int, default=500, help="Checkpoint frequency")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
-    parser.add_argument("--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)")
+    parser.add_argument(
+        "--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)"
+    )
 
     args = parser.parse_args()
 
