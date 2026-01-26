@@ -77,15 +77,19 @@ class AtlasMemory(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, return_contribution: bool = False) -> Tensor:
         """
         Apply gated memory update.
 
         Args:
             x: Input tensor of shape (batch, seq_len, dim)
+            return_contribution: If True, return only the memory contribution
+                without the residual connection. Used for output-level
+                combination where the caller handles the residual.
 
         Returns:
-            Updated tensor with memory contribution added
+            If return_contribution=False: x + memory_contribution (default)
+            If return_contribution=True: memory_contribution only
         """
         # Gate: σ(W2·x)
         gate = F.silu(self.w2(x))
@@ -93,8 +97,14 @@ class AtlasMemory(nn.Module):
         value = self.w3(x)
         # Gated value: gate ⊙ value
         gated = gate * value
-        # Project down and add residual: x + W1·(gate ⊙ value)
-        out: Tensor = x + self.w1(gated)
+        # Memory contribution: W1·(gate ⊙ value)
+        contribution: Tensor = self.w1(gated)
+
+        if return_contribution:
+            return contribution
+
+        # Default: add residual for standalone use
+        out: Tensor = x + contribution
         return out
 
     def extra_repr(self) -> str:
@@ -195,15 +205,19 @@ class AtlasMemoryPoly(nn.Module):
         # Concatenate: [x, polynomial features]
         return torch.cat([x, triu], dim=-1)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, return_contribution: bool = False) -> Tensor:
         """
         Apply polynomial-enhanced gated memory update.
 
         Args:
             x: Input tensor of shape (batch, seq_len, dim)
+            return_contribution: If True, return only the memory contribution
+                without the residual connection. Used for output-level
+                combination where the caller handles the residual.
 
         Returns:
-            Updated tensor with memory contribution added
+            If return_contribution=False: x + memory_contribution (default)
+            If return_contribution=True: memory_contribution only
         """
         # Expand with polynomial features
         x_poly = self._polynomial_features(x)
@@ -213,8 +227,14 @@ class AtlasMemoryPoly(nn.Module):
         value = self.w3(x_poly)
         gated = gate * value
 
-        # Residual connection with original x (not poly)
-        out: Tensor = x + self.w1(gated)
+        # Memory contribution: W1·(gate ⊙ value)
+        contribution: Tensor = self.w1(gated)
+
+        if return_contribution:
+            return contribution
+
+        # Default: residual connection with original x (not poly)
+        out: Tensor = x + contribution
         return out
 
     def extra_repr(self) -> str:
