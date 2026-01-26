@@ -12,6 +12,7 @@ dependencies = [
     "zstandard (>=0.25.0,<0.26.0)",
     "matplotlib (>=3.10.8,<4.0.0)",
     "pyarrow>=14.0.0",  # Parquet file reading for SmolLM
+    "pandas>=2.0",    # Analysis tools
 ]
 
 [project.optional-dependencies]
@@ -28,7 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "analysis*"]
 
 [tool.ruff]
 line-length = 100
