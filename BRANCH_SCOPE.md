@@ -77,9 +77,9 @@ With optimal coefficients: a=3.4445, b=-4.7750, c=2.0315
 
 | Component | Description | Complexity |
 |-----------|-------------|------------|
-| Omega loss computation | `||M(phi(k)) - v||^2` over context window | Medium |
-| Gradient computation | `grad(L_omega)` w.r.t. memory params | Medium |
-| Momentum buffer `S_t` | Persistent state across forward passes | Medium |
+| Omega loss computation | MSE over context window | Medium |
+| Gradient computation | grad w.r.t. memory params | Medium |
+| Momentum buffer S_t | Persistent state across forward passes | Medium |
 | Memory update loop | Wire NS into parameter update | Medium |
 | State management | Handle batch boundaries, reset conditions | High |
 
