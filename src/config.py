@@ -29,8 +29,9 @@ HEAD_DIM: int = D // N_HEADS      # Per-head dimension (64)
 # Memory configuration
 N_PERSISTENT: int = 64            # Number of persistent memory tokens
 L_M: int = 2                      # Memory depth (Phase 1 decision: start with 2)
-POLY_DEGREE: int = 2              # Polynomial feature degree (likely choice)
+POLY_DEGREE: int = 2              # Polynomial feature degree (φ_2 for quadratic capacity)
 MEMORY_EXPANSION: int = 4         # SwiGLU expansion factor
+USE_POLY_MEMORY: bool = True      # Use polynomial features for memory (ESSENTIAL per paper)
 
 # Sliding window attention
 WINDOW_SIZE: int = 512            # Local attention window
