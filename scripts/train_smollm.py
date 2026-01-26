@@ -255,21 +255,24 @@ def train(config: TrainingConfig):
     # Memory is updated via TTL (Test-Time Learning) which uses Newton-Schulz
     # orthogonalization - the correct optimizer for memory's non-convex landscape.
     # AdamW (first-order) treats memory gradients as noise and collapses gates.
+    memory_params: list[nn.Parameter] = []  # For zeroing gradients after backward
     if config.disable_memory:
         # No memory to exclude
         optimizer_params = list(model.parameters())
         logger.info("Optimizer: AdamW for all parameters (memory disabled)")
     else:
-        # Collect memory parameter IDs to exclude
+        # Collect memory parameters to exclude from AdamW
+        # We need both IDs (for filtering) and the params themselves (for zeroing grads)
         memory_param_ids: set[int] = set()
         for block in model.blocks:
             for p in block.memory.parameters():
                 memory_param_ids.add(id(p))
+                memory_params.append(p)
 
         # Separate parameters: AdamW handles non-memory, TTL handles memory
         optimizer_params = [p for p in model.parameters() if id(p) not in memory_param_ids]
         n_adamw_params = sum(p.numel() for p in optimizer_params)
-        n_memory_params = sum(p.numel() for p in model.parameters()) - n_adamw_params
+        n_memory_params = sum(p.numel() for p in memory_params)
         logger.info(
             f"Optimizer: AdamW for {n_adamw_params / 1e6:.1f}M params "
             f"(excluding {n_memory_params / 1e6:.1f}M memory params, handled by TTL)"
@@ -343,6 +346,14 @@ def train(config: TrainingConfig):
             # Backward pass (accumulates gradients)
             total_loss.backward()
 
+            # Zero memory gradients immediately after backward.
+            # Memory params receive gradients from LM loss, but these are never used
+            # (TTL handles memory updates separately via omega_loss). Without zeroing,
+            # these orphaned gradients accumulate indefinitely and inflate clip_grad_norm_.
+            for p in memory_params:
+                if p.grad is not None:
+                    p.grad.zero_()
+
             # Track stats for this micro-batch
             batch_tokens = labels.numel()
             accum_lm_loss += lm_loss.item() * batch_tokens
@@ -353,8 +364,8 @@ def train(config: TrainingConfig):
 
             # Only step optimizer after accumulation is complete
             if micro_step % accum_steps == 0:
-                # Gradient clipping
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                # Gradient clipping (only optimizer-managed params, not memory)
+                grad_norm = nn.utils.clip_grad_norm_(optimizer_params, config.grad_clip)
 
                 # Optimizer step
                 optimizer.step()
