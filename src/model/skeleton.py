@@ -1,18 +1,21 @@
 """
-Atlas-MAG Skeleton Model with Omega Rule.
+Atlas-MAG Skeleton Model with Polynomial Memory.
 
-This is the minimal testable model that can validate:
-- Persistent memory computation (M_persistent, norm_persistent)
-- W_init calibration via steady-state
-- Forward pass works end-to-end
+This is the minimal testable model implementing the Atlas MAG architecture
+with output-level combination of SWA (attention) and memory branches.
 
 Key features from Atlas paper (arXiv:2505.23735):
-- Omega Rule: Sliding context window with exponential decay
+- Output-level combination: SWA and memory run as parallel branches
+- Polynomial features (φ_2): Essential for memory capacity O(d_k²)
 - Input-dependent γ gates: Per-position decay modulation
 - Per-layer gate initialization: Spread across layers for differentiation
 
+Memory capacity (Section 3.1, Propositions 1 & 2):
+- Without polynomial features: O(d_k) ≈ 64 associations
+- With φ_2 polynomial features: O(d_k²) ≈ 4,096 associations
+
 Note: TNT (Titans-in-Titans) hierarchical memory is NOT implemented.
-This model uses single-layer memory with the Omega Rule context window.
+This model uses single-layer memory with polynomial feature expansion.
 
 Reference: Atlas paper (arXiv:2505.23735)
 """
@@ -25,8 +28,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.config import D, N_HEADS, N_PERSISTENT, MEMORY_EXPANSION, VOCAB_SIZE, GAMMA_GATE_HIDDEN_DIM
-from src.model.atlas_memory import AtlasMemory  # Keep for Option B fallback
+from src.config import (
+    D, N_HEADS, N_PERSISTENT, MEMORY_EXPANSION, VOCAB_SIZE,
+    GAMMA_GATE_HIDDEN_DIM, USE_POLY_MEMORY, POLY_DEGREE,
+)
+from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
 from src.model.persistent_memory import PersistentMemory
 from src.model.qk_projection import CausalQKMemoryProjection
 from src.model.projections import QKVProjection, RotaryEmbedding
@@ -90,11 +96,17 @@ class AtlasMAGBlock(nn.Module):
     """
     Single Atlas-MAG block combining attention and memory.
 
-    Architecture:
-        x -> norm1 -> [attention + memory_gate * memory] -> + x
-        x -> norm2 -> ffn -> + x
+    Architecture (Figure 3 from Atlas paper):
+        Input → [SWA Branch] ──────┐
+              → [Memory Branch] ───┼──► Add → Output
+
+    Memory branch uses AtlasMemoryPoly with polynomial features (φ_2):
+        - Capacity without φ: O(d_k) ≈ 64 associations
+        - Capacity with φ_2: O(d_k²) ≈ 4,096 associations
 
     Key features from Atlas paper:
+    - Output-level combination (not Q-level blending)
+    - Polynomial features for increased memory capacity (ESSENTIAL)
     - Input-dependent γ gates for context pruning
     - Per-layer gate initialization for differentiation
 
@@ -148,8 +160,20 @@ class AtlasMAGBlock(nn.Module):
             # Input-dependent γ gate for context pruning
             self.gamma_gate = GammaGate(dim)
 
-        # Keep AtlasMemory as Option B fallback (not used in forward for now)
-        self.memory = AtlasMemory(dim, memory_expansion)
+        # Memory module: AtlasMemoryPoly (with polynomial features) or AtlasMemory
+        # Polynomial features are ESSENTIAL for memory capacity (Atlas paper Section 3.1)
+        # Without: O(d_k) capacity. With φ_2: O(d_k²) capacity (64× improvement for d_k=64)
+        self.use_poly_memory = USE_POLY_MEMORY
+        if USE_POLY_MEMORY:
+            # key_dim = head_dim for polynomial features (capacity theorem uses d_k)
+            self.memory: nn.Module = AtlasMemoryPoly(
+                dim=dim,
+                key_dim=self.head_dim,  # Use head_dim for O(d_k²) capacity
+                expansion=memory_expansion,
+                poly_degree=POLY_DEGREE,
+            )
+        else:
+            self.memory = AtlasMemory(dim, memory_expansion)
 
         # Memory gate: controls Q vs Q' blending
         # PER-LAYER INITIALIZATION: Spread gates across layers

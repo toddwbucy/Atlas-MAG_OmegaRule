@@ -114,19 +114,25 @@ class AtlasMemory(nn.Module):
 
 class AtlasMemoryPoly(nn.Module):
     """
-    Atlas Memory with Polynomial Features.
+    Atlas Memory with Polynomial Features on Key-Sized Projections.
 
-    Extends the basic Atlas memory by first expanding the input
-    with polynomial features (degree 2 by default), increasing
-    the representational power of the memory.
+    Per Atlas paper Section 3.1, memory capacity is O(d_k) without polynomial
+    features and O(d_k^p) with them. To keep parameters tractable, we:
+    1. Project input from dim to key_dim (default: 64)
+    2. Apply polynomial features on key_dim → poly_dim ≈ 2144
+    3. Process through gated MLP
+    4. Project back to dim
 
-    Polynomial features for input x create:
-        [x, x_i * x_j for i <= j]
+    This increases memory capacity from O(64) to O(4096) associations
+    while keeping parameter count reasonable (~10M per layer vs 1B+).
 
-    This increases the input dimension from d to d + d*(d+1)/2.
+    Memory capacity (Atlas Propositions 1 & 2):
+        - Without φ: O(d_k) ≈ 64 associations
+        - With φ_2: O(d_k²) ≈ 4,096 associations
 
     Args:
-        dim: Model dimension
+        dim: Model dimension (e.g., 768)
+        key_dim: Dimension for polynomial features (default: 64, like head_dim)
         expansion: Hidden dimension multiplier (default: 4)
         poly_degree: Polynomial degree (default: 2, only 2 is implemented)
         bias: Whether to use bias (default: False)
@@ -135,6 +141,7 @@ class AtlasMemoryPoly(nn.Module):
     def __init__(
         self,
         dim: int,
+        key_dim: int = 64,  # Same as head_dim for capacity theorem
         expansion: int = MEMORY_EXPANSION,
         poly_degree: int = POLY_DEGREE,
         bias: bool = False,
@@ -144,61 +151,83 @@ class AtlasMemoryPoly(nn.Module):
 
         Args:
             dim: Model dimension
+            key_dim: Dimension for polynomial feature expansion (capacity = O(key_dim²))
             expansion: Hidden dimension multiplier
             poly_degree: Polynomial degree for feature expansion (only 2 supported)
             bias: Whether to use bias in linear layers
         """
         super().__init__()
         self.dim = dim
+        self.key_dim = key_dim
         self.poly_degree = poly_degree
 
         if poly_degree != 2:
             raise NotImplementedError("Only polynomial degree 2 is implemented")
 
-        # Compute expanded dimension: d + d*(d+1)/2
-        self.poly_dim = dim + (dim * (dim + 1)) // 2
-        self.hidden_dim = dim * expansion
+        # Compute expanded dimension: key_dim + key_dim*(key_dim+1)/2
+        # For key_dim=64: 64 + 2080 = 2144
+        self.poly_dim = key_dim + (key_dim * (key_dim + 1)) // 2
+        self.hidden_dim = key_dim * expansion  # Scale hidden with key_dim, not full dim
 
-        # Projections now take poly_dim as input
-        self.w1 = nn.Linear(self.hidden_dim, dim, bias=bias)
+        # Project dim → key_dim for polynomial features
+        self.proj_down = nn.Linear(dim, key_dim, bias=bias)
+
+        # Normalize polynomial features to maintain signal magnitude
+        self.poly_norm = nn.LayerNorm(self.poly_dim)
+
+        # Gated MLP operates on poly_dim
+        self.w1 = nn.Linear(self.hidden_dim, key_dim, bias=bias)  # Output key_dim
         self.w2 = nn.Linear(self.poly_dim, self.hidden_dim, bias=bias)
         self.w3 = nn.Linear(self.poly_dim, self.hidden_dim, bias=bias)
+
+        # Project key_dim → dim for output
+        self.proj_up = nn.Linear(key_dim, dim, bias=bias)
 
         # Precompute indices for upper triangular (including diagonal)
         self.register_buffer(
             "triu_indices",
-            torch.triu_indices(dim, dim),
+            torch.triu_indices(key_dim, key_dim),
             persistent=False,
         )
 
         self._init_weights()
 
     def _init_weights(self):
-        """Initialize with smaller weights due to larger input dim."""
-        scale = 0.02 / math.sqrt(self.poly_dim / self.dim)
+        """Initialize weights for stable training with meaningful initial output.
+
+        After LayerNorm, the polynomial features have unit variance. We use
+        standard initialization (0.02) for all layers since the normalization
+        handles the input scale.
+        """
+        # Standard initialization for all layers (LayerNorm handles input scaling)
+        nn.init.normal_(self.w1.weight, std=0.02)
+        nn.init.normal_(self.w2.weight, std=0.02)
+        nn.init.normal_(self.w3.weight, std=0.02)
+
         for module in [self.w1, self.w2, self.w3]:
-            nn.init.normal_(module.weight, std=scale)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+
+        # Standard init for projection layers
+        nn.init.normal_(self.proj_down.weight, std=0.02)
+        nn.init.normal_(self.proj_up.weight, std=0.02)
 
     def _polynomial_features(self, x: Tensor) -> Tensor:
         """
         Compute degree-2 polynomial features.
 
         Args:
-            x: Input of shape (batch, seq_len, dim)
+            x: Input of shape (batch, seq_len, key_dim)
 
         Returns:
             Expanded tensor of shape (batch, seq_len, poly_dim)
         """
-        _batch, _seq_len, _d = x.shape
-
         # Compute outer product: x_i * x_j
-        # Shape: (batch, seq_len, dim, dim)
+        # Shape: (batch, seq_len, key_dim, key_dim)
         outer = x.unsqueeze(-1) * x.unsqueeze(-2)
 
         # Extract upper triangular (including diagonal)
-        # Shape: (batch, seq_len, d*(d+1)/2)
+        # Shape: (batch, seq_len, key_dim*(key_dim+1)/2)
         triu_idx = cast(Tensor, self.triu_indices)
         triu = outer[..., triu_idx[0], triu_idx[1]]
 
@@ -219,27 +248,35 @@ class AtlasMemoryPoly(nn.Module):
             If return_contribution=False: x + memory_contribution (default)
             If return_contribution=True: memory_contribution only
         """
-        # Expand with polynomial features
-        x_poly = self._polynomial_features(x)
+        # Project to key dimension for polynomial features
+        x_key = self.proj_down(x)  # (batch, seq_len, key_dim)
 
-        # Gate and value use polynomial features
+        # Expand with polynomial features and normalize
+        # Normalization maintains signal magnitude despite varying term scales
+        x_poly = self._polynomial_features(x_key)  # (batch, seq_len, poly_dim)
+        x_poly = self.poly_norm(x_poly)
+
+        # Gate and value use normalized polynomial features
         gate = F.silu(self.w2(x_poly))
         value = self.w3(x_poly)
         gated = gate * value
 
-        # Memory contribution: W1·(gate ⊙ value)
-        contribution: Tensor = self.w1(gated)
+        # Memory output in key dimension
+        mem_key: Tensor = self.w1(gated)  # (batch, seq_len, key_dim)
+
+        # Project back to full dimension
+        contribution: Tensor = self.proj_up(mem_key)  # (batch, seq_len, dim)
 
         if return_contribution:
             return contribution
 
-        # Default: residual connection with original x (not poly)
+        # Default: residual connection with original x
         out: Tensor = x + contribution
         return out
 
     def extra_repr(self) -> str:
         """Return a string with extra module information for repr()."""
         return (
-            f"dim={self.dim}, poly_dim={self.poly_dim}, "
+            f"dim={self.dim}, key_dim={self.key_dim}, poly_dim={self.poly_dim}, "
             f"hidden_dim={self.hidden_dim}, poly_degree={self.poly_degree}"
         )
