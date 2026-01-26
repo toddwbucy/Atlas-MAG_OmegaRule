@@ -241,20 +241,27 @@ def verify_multiplicative_fusion(model: Any, device: str = "cpu") -> bool:
 
     for i, block in enumerate(blocks):
         # Test gate=0 (pure attention)
+        # Temporarily disable TTL for this test to avoid parameter modification
+        original_ttl_enabled = getattr(block, 'ttl_enabled', False)
+        block.ttl_enabled = False
+
         with torch.no_grad():
             # Store original gate
             original_gate = block.memory_gate.data.clone()
 
             # Force gate to 0
             block.memory_gate.data.fill_(-100)  # sigmoid(-100) is approximately 0
-            output_gate0 = block(x.clone())
+            output_gate0, _ = block(x.clone())
 
             # Force gate to 1
             block.memory_gate.data.fill_(100)  # sigmoid(100) is approximately 1
-            output_gate1 = block(x.clone())
+            output_gate1, _ = block(x.clone())
 
             # Restore original
             block.memory_gate.data.copy_(original_gate)
+
+        # Restore TTL state
+        block.ttl_enabled = original_ttl_enabled
 
         # Outputs should be different (attention vs memory)
         if torch.allclose(output_gate0, output_gate1, atol=1e-5):

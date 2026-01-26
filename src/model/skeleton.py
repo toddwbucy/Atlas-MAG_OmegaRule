@@ -33,6 +33,8 @@ from src.config import (
     MEMORY_EXPANSION,
     N_HEADS,
     N_PERSISTENT,
+    OMEGA_CONTEXT_WINDOW,
+    OMEGA_DECAY_BASE,
     POLY_DEGREE,
     USE_POLY_MEMORY,
     VOCAB_SIZE,
@@ -44,6 +46,8 @@ from src.model.projections import QKVProjection, RotaryEmbedding
 from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
+from src.training.omega_loss import compute_omega_loss
+from src.training.ttl_update import ttl_step
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +139,12 @@ class AtlasMAGBlock(nn.Module):
         persistent_memory: Optional[PersistentMemory] = None,
         layer_idx: int = 0,
         n_layers: int = 12,
+        # TTL (Test-Time Learning) configuration
+        ttl_enabled: bool = True,
+        ttl_theta: float = 0.9,       # Momentum decay
+        ttl_alpha: float = 0.999,     # Weight decay
+        ttl_eta: float = 0.01,        # Learning rate
+        ttl_ns_iters: int = 5,        # Newton-Schulz iterations
     ):
         super().__init__()
         self.dim = dim
@@ -142,6 +152,13 @@ class AtlasMAGBlock(nn.Module):
         self.head_dim = dim // n_heads
         self.disable_memory = disable_memory
         self.layer_idx = layer_idx
+
+        # TTL configuration
+        self.ttl_enabled = ttl_enabled and not disable_memory  # TTL requires memory
+        self.ttl_theta = ttl_theta
+        self.ttl_alpha = ttl_alpha
+        self.ttl_eta = ttl_eta
+        self.ttl_ns_iters = ttl_ns_iters
 
         # Normalization layers
         self.norm1 = RMSNorm(dim)
@@ -243,9 +260,9 @@ class AtlasMAGBlock(nn.Module):
         self,
         x: Tensor,
         attention_mask: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, Optional[dict]]:
         """
-        Forward pass through the block with output-level memory combination.
+        Forward pass through the block with output-level memory combination and TTL.
 
         Architecture (Atlas paper Figure 3 - MAG):
             Input → [SWA Branch] ──────┐
@@ -255,6 +272,11 @@ class AtlasMAGBlock(nn.Module):
         and their outputs are combined at the output level (after both computations).
         This is different from Q-level blending which modifies Q before attention.
 
+        TTL Update (if enabled):
+            Before using memory output, performs test-time learning update:
+            1. Compute Omega loss: L = sum(gamma_i * ||M(h_i) - v_i||^2)
+            2. Update memory: S_t = theta*S_{t-1} + grad, M -= eta*NS(S_t)
+
         Memory contribution is gated:
             output = attn_out + gate * mem_out
 
@@ -263,9 +285,12 @@ class AtlasMAGBlock(nn.Module):
             attention_mask: Optional causal mask
 
         Returns:
-            Output tensor of shape (batch, seq_len, dim)
+            Tuple of:
+                - Output tensor of shape (batch, seq_len, dim)
+                - TTL stats dict (or None if TTL disabled/not run)
         """
         batch, seq_len, dim = x.shape
+        ttl_stats: Optional[dict] = None
 
         # Pre-norm
         h = self.norm1(x)
@@ -275,6 +300,43 @@ class AtlasMAGBlock(nn.Module):
 
         # Apply rotary embeddings
         q, k = self.rope(q, k)
+
+        # === TTL Update (before using memory) ===
+        # Updates memory parameters based on Omega Rule loss
+        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory:
+            # TTL requires AtlasMemoryPoly with momentum buffers
+            from typing import cast as type_cast
+            memory_poly = type_cast(AtlasMemoryPoly, self.memory)
+
+            # Flatten v from (batch, n_heads, seq_len, head_dim) to (batch, seq_len, dim)
+            # for use as target values in Omega loss
+            v_flat = v.transpose(1, 2).contiguous().view(batch, seq_len, dim)
+
+            # Get gamma gates for decay weighting (if available)
+            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
+
+            # Compute Omega loss with gradient enabled for memory parameters
+            with torch.enable_grad():
+                omega_loss = compute_omega_loss(
+                    memory=memory_poly,
+                    keys=h,  # Use hidden state as keys
+                    values=v_flat,  # Use QKV values as targets
+                    gamma=gamma,
+                    context_window=OMEGA_CONTEXT_WINDOW,
+                    decay_base=OMEGA_DECAY_BASE,
+                )
+
+                # Perform TTL update step
+                ttl_stats = ttl_step(
+                    memory=memory_poly,
+                    loss=omega_loss,
+                    theta=self.ttl_theta,
+                    alpha=self.ttl_alpha,
+                    eta=self.ttl_eta,
+                    ns_iterations=self.ttl_ns_iters,
+                )
+                ttl_stats["omega_loss"] = omega_loss.item()
+                ttl_stats["layer_idx"] = self.layer_idx
 
         # === SWA Branch: Standard scaled dot-product attention ===
         # Shape: (batch, n_heads, seq_len, seq_len)
@@ -324,7 +386,7 @@ class AtlasMAGBlock(nn.Module):
         # FFN with pre-norm and residual
         x = x + self.ffn(self.norm2(x))
 
-        return x
+        return x, ttl_stats
 
     def get_gate_value(self) -> float:
         """Get current gate value for monitoring."""
@@ -362,6 +424,12 @@ class AtlasMAGSkeleton(nn.Module):
         n_persistent: int = N_PERSISTENT,
         memory_expansion: int = MEMORY_EXPANSION,
         disable_memory: bool = False,
+        # TTL (Test-Time Learning) configuration
+        ttl_enabled: bool = True,
+        ttl_theta: float = 0.9,
+        ttl_alpha: float = 0.999,
+        ttl_eta: float = 0.01,
+        ttl_ns_iters: int = 5,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -369,6 +437,7 @@ class AtlasMAGSkeleton(nn.Module):
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.disable_memory = disable_memory
+        self.ttl_enabled = ttl_enabled
 
         # Token embeddings
         self.tok_emb = nn.Embedding(vocab_size, dim)
@@ -389,6 +458,12 @@ class AtlasMAGSkeleton(nn.Module):
                 persistent_memory=self.persistent_memory,
                 layer_idx=i,
                 n_layers=n_layers,
+                # TTL configuration
+                ttl_enabled=ttl_enabled,
+                ttl_theta=ttl_theta,
+                ttl_alpha=ttl_alpha,
+                ttl_eta=ttl_eta,
+                ttl_ns_iters=ttl_ns_iters,
             )
             for i in range(n_layers)
         ])
@@ -421,16 +496,19 @@ class AtlasMAGSkeleton(nn.Module):
         self,
         input_ids: Tensor,
         attention_mask: Optional[Tensor] = None,
-    ) -> Tensor:
+        return_ttl_stats: bool = False,
+    ) -> Tensor | Tuple[Tensor, list[dict]]:
         """
         Forward pass through the model.
 
         Args:
             input_ids: Token IDs of shape (batch, seq_len)
             attention_mask: Optional attention mask
+            return_ttl_stats: If True, also return TTL statistics from each layer
 
         Returns:
-            Logits of shape (batch, seq_len, vocab_size)
+            If return_ttl_stats=False: Logits of shape (batch, seq_len, vocab_size)
+            If return_ttl_stats=True: Tuple of (logits, list of TTL stats per layer)
         """
         # Token embeddings
         x = self.tok_emb(input_ids)
@@ -438,14 +516,19 @@ class AtlasMAGSkeleton(nn.Module):
         # Add W_init to initial hidden state (broadcast across positions)
         x = x + self.w_init
 
-        # Forward through blocks
+        # Forward through blocks, collecting TTL stats
+        ttl_stats_list: list[dict] = []
         for block in self.blocks:
-            x = block(x, attention_mask)
+            x, ttl_stats = block(x, attention_mask)
+            if ttl_stats is not None:
+                ttl_stats_list.append(ttl_stats)
 
         # Final norm and output
         x = self.norm_f(x)
         logits: Tensor = self.lm_head(x)
 
+        if return_ttl_stats:
+            return logits, ttl_stats_list
         return logits
 
     def forward_memory_only(
@@ -466,7 +549,9 @@ class AtlasMAGSkeleton(nn.Module):
                 - logits: Output logits
                 - memory_state: Flattened memory module weights
         """
-        logits = self.forward(input_ids)
+        result = self.forward(input_ids, return_ttl_stats=False)
+        # Handle both return types (with and without TTL stats)
+        logits = result if isinstance(result, Tensor) else result[0]
 
         # Collect memory module states from all blocks
         memory_states: list[Tensor] = []
@@ -534,6 +619,69 @@ class AtlasMAGSkeleton(nn.Module):
             "memory_gate_std": float(gate_tensor.std().item()),
             "memory_gate_min": float(gate_tensor.min().item()),
             "memory_gate_max": float(gate_tensor.max().item()),
+        }
+
+    def reset_ttl_momentum(self) -> None:
+        """
+        Reset TTL momentum buffers in all layers.
+
+        Call this at sequence/batch boundaries depending on TTL_RESET_MODE.
+        """
+        for block in self.blocks:
+            mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
+            if hasattr(mag_block.memory, 'reset_momentum'):
+                mag_block.memory.reset_momentum()
+
+    def set_ttl_enabled(self, enabled: bool) -> None:
+        """
+        Enable or disable TTL for all layers.
+
+        Useful for ablation studies or switching behavior between
+        training and inference.
+
+        Args:
+            enabled: Whether TTL should be enabled
+        """
+        self.ttl_enabled = enabled
+        for block in self.blocks:
+            mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
+            mag_block.ttl_enabled = enabled and not mag_block.disable_memory
+
+    def get_ttl_stats_summary(self, ttl_stats_list: list[dict]) -> dict:
+        """
+        Aggregate TTL statistics across all layers.
+
+        Args:
+            ttl_stats_list: List of TTL stats dicts from forward pass
+
+        Returns:
+            Aggregated statistics:
+            - omega_loss_mean: Mean Omega loss across layers
+            - omega_loss_max: Maximum Omega loss
+            - grad_norm_mean: Mean gradient norm across all params
+            - update_norm_mean: Mean update norm after Newton-Schulz
+        """
+        if not ttl_stats_list:
+            return {}
+
+        omega_losses = [s["omega_loss"] for s in ttl_stats_list if "omega_loss" in s]
+
+        # Collect all grad norms and update norms
+        grad_norms: list[float] = []
+        update_norms: list[float] = []
+        for stats in ttl_stats_list:
+            for key, value in stats.items():
+                if key.endswith("_grad_norm"):
+                    grad_norms.append(value)
+                elif key.endswith("_update_norm"):
+                    update_norms.append(value)
+
+        return {
+            "omega_loss_mean": sum(omega_losses) / len(omega_losses) if omega_losses else 0.0,
+            "omega_loss_max": max(omega_losses) if omega_losses else 0.0,
+            "grad_norm_mean": sum(grad_norms) / len(grad_norms) if grad_norms else 0.0,
+            "update_norm_mean": sum(update_norms) / len(update_norms) if update_norms else 0.0,
+            "n_layers_with_ttl": len(ttl_stats_list),
         }
 
     def count_parameters(self) -> dict:

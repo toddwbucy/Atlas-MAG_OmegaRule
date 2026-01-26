@@ -61,6 +61,30 @@ K: int = 5                        # Newton-Schulz iterations for Muon optimizer
 
 
 # =============================================================================
+# TTL (Test-Time Learning) Configuration (Atlas paper Eq. 32-33)
+# =============================================================================
+
+# Master switch for TTL (both training and inference)
+TTL_ENABLED: bool = True
+
+# Momentum decay: S_t = theta * S_{t-1} + grad
+TTL_THETA: float = 0.9
+
+# Weight decay: M_t = alpha * M_{t-1} - eta * NS(S_t)
+TTL_ALPHA: float = 0.999          # Close to 1 = minimal decay
+
+# Memory learning rate
+TTL_ETA: float = 0.01
+
+# Newton-Schulz iterations for momentum orthogonalization
+TTL_NS_ITERATIONS: int = 5        # Same as K (per paper)
+
+# When to reset momentum buffers
+# Options: "sequence" (conservative), "batch", "never" (most aggressive)
+TTL_RESET_MODE: str = "sequence"
+
+
+# =============================================================================
 # Gate Polarization Constants (PRD Section: Gate Polarization)
 # =============================================================================
 
