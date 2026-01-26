@@ -467,11 +467,17 @@ class AtlasMAGSkeleton(nn.Module):
         for block in self.blocks:
             # Cast to AtlasMAGBlock to access memory attribute
             mag_block: AtlasMAGBlock = block  # type: ignore[assignment]
+            mem = mag_block.memory
             memory_states.extend([
-                mag_block.memory.w1.weight.flatten(),
-                mag_block.memory.w2.weight.flatten(),
-                mag_block.memory.w3.weight.flatten(),
+                mem.w1.weight.flatten(),
+                mem.w2.weight.flatten(),
+                mem.w3.weight.flatten(),
             ])
+            # Include projection layers for AtlasMemoryPoly
+            if hasattr(mem, 'proj_down'):
+                memory_states.append(mem.proj_down.weight.flatten())
+            if hasattr(mem, 'proj_up'):
+                memory_states.append(mem.proj_up.weight.flatten())
 
         memory_state = torch.cat(memory_states)
 
