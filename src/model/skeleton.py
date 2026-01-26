@@ -479,15 +479,14 @@ class AtlasMAGSkeleton(nn.Module):
                 mem.w2.weight.flatten(),
                 mem.w3.weight.flatten(),
             ])
-            # Include projection layers and poly_norm for AtlasMemoryPoly
+            # Include projection layers for AtlasMemoryPoly
+            # Note: poly_norm is intentionally excluded - it's normalization
+            # infrastructure, not learned memory content (like a sound engineer's
+            # mixer settings vs. the actual music being recorded)
             if hasattr(mem, 'proj_down'):
                 memory_states.append(mem.proj_down.weight.flatten())
             if hasattr(mem, 'proj_up'):
                 memory_states.append(mem.proj_up.weight.flatten())
-            if hasattr(mem, 'poly_norm'):
-                memory_states.append(mem.poly_norm.weight.flatten())
-                if mem.poly_norm.bias is not None:
-                    memory_states.append(mem.poly_norm.bias.flatten())
 
         memory_state = torch.cat(memory_states)
 
