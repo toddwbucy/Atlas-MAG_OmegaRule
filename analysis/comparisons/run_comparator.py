@@ -64,9 +64,11 @@ class RunComparator:
 
         metrics = self.runs[name]
 
-        # Calculate statistics
-        best_val_loss = min(metrics.val_loss) if metrics.val_loss else None
-        best_val_ppl = min(metrics.val_ppl) if metrics.val_ppl else None
+        # Filter None values from lists that may contain them for alignment
+        val_losses = [v for v in metrics.val_loss if v is not None]
+        val_ppls = [v for v in metrics.val_ppl if v is not None]
+        throughput_vals = [v for v in metrics.tokens_per_sec if v is not None]
+        grad_vals = [v for v in metrics.grad_norm if v is not None]
 
         return RunSummary(
             name=name,
@@ -75,14 +77,10 @@ class RunComparator:
             total_tokens_m=metrics.tokens[-1] if metrics.tokens else 0,
             final_train_loss=metrics.loss[-1] if metrics.loss else float("inf"),
             final_train_ppl=metrics.ppl[-1] if metrics.ppl else float("inf"),
-            best_val_loss=best_val_loss,
-            best_val_ppl=best_val_ppl,
-            mean_throughput=sum(metrics.tokens_per_sec) / len(metrics.tokens_per_sec)
-            if metrics.tokens_per_sec
-            else 0,
-            mean_grad_norm=sum(metrics.grad_norm) / len(metrics.grad_norm)
-            if metrics.grad_norm
-            else 0,
+            best_val_loss=min(val_losses) if val_losses else None,
+            best_val_ppl=min(val_ppls) if val_ppls else None,
+            mean_throughput=sum(throughput_vals) / len(throughput_vals) if throughput_vals else 0,
+            mean_grad_norm=sum(grad_vals) / len(grad_vals) if grad_vals else 0,
         )
 
     def print_comparison_table(self) -> str:
