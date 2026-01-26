@@ -215,18 +215,18 @@ class AtlasMAGBlock(nn.Module):
         attention_mask: Optional[Tensor] = None,
     ) -> Tensor:
         """
-        Forward pass through the block with Omega Rule memory.
+        Forward pass through the block with output-level memory combination.
 
-        The memory mechanism works by projecting queries through accumulated
-        key outer products with context window and decay (Omega Rule):
-            M_t = M_persistent + Σ(i=t-c+1 to t) γ_i * (k_i ⊗ k_i)
-            Q' = M_t @ Q / norm_sum
+        Architecture (Atlas paper Figure 3 - MAG):
+            Input → [SWA Branch] ──────┐
+                  → [Memory Branch] ───┼──► Add → Output
 
-        Input-dependent γ gates modulate the decay weights, allowing the
-        model to selectively forget irrelevant past context.
+        The SWA (Sliding Window Attention) and Memory branches run in parallel,
+        and their outputs are combined at the output level (after both computations).
+        This is different from Q-level blending which modifies Q before attention.
 
-        A learned gate blends Q and Q':
-            Q_final = (1-gate)*Q + gate*Q'
+        Memory contribution is gated:
+            output = attn_out + gate * mem_out
 
         Args:
             x: Input tensor of shape (batch, seq_len, dim)
@@ -246,23 +246,7 @@ class AtlasMAGBlock(nn.Module):
         # Apply rotary embeddings
         q, k = self.rope(q, k)
 
-        # Memory: Project Q through accumulated key memory with Omega Rule
-        if not self.disable_memory and self.qk_memory is not None:
-            # Compute input-dependent γ gates for context pruning
-            gamma_gates: Optional[Tensor] = None
-            if self.gamma_gate is not None:
-                gamma_gates = self.gamma_gate(h)  # (batch, seq_len, 1)
-
-            # Q' = M_t @ Q / norm_sum (memory-enhanced queries)
-            # With Omega Rule: context window + decay + γ gates
-            q_projected = self.qk_memory(q, k, gamma_gates=gamma_gates)
-
-            # Gate blends original Q with memory-projected Q'
-            # gate ≈ 0: pure attention (Q), gate ≈ 1: pure memory (Q')
-            gate = torch.sigmoid(self.memory_gate)
-            q = (1 - gate) * q + gate * q_projected
-
-        # Scaled dot-product attention (with potentially memory-enhanced Q)
+        # === SWA Branch: Standard scaled dot-product attention ===
         # Shape: (batch, n_heads, seq_len, seq_len)
         scale = self.head_dim ** -0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
@@ -286,8 +270,26 @@ class AtlasMAGBlock(nn.Module):
         # Reshape back: (batch, n_heads, seq_len, head_dim) -> (batch, seq_len, dim)
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch, seq_len, dim)
 
-        # Output projection and residual
-        x = x + self.w_o(attn_out)
+        # Project attention output
+        attn_out = self.w_o(attn_out)
+
+        # === Memory Branch: Gated MLP memory (parallel to attention) ===
+        mem_out: Optional[Tensor] = None
+        if not self.disable_memory:
+            # Get memory contribution (without residual - we handle combination here)
+            mem_out = self.memory(h, return_contribution=True)
+
+            # Apply learned gate: controls memory vs attention balance
+            # gate ≈ 0: pure attention, gate ≈ 1: pure memory
+            gate = torch.sigmoid(self.memory_gate)
+            mem_out = gate * mem_out
+
+        # === Output-level combination ===
+        # Combine SWA and Memory branches with residual connection
+        if mem_out is not None:
+            x = x + attn_out + mem_out
+        else:
+            x = x + attn_out
 
         # FFN with pre-norm and residual
         x = x + self.ffn(self.norm2(x))
