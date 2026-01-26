@@ -9,29 +9,29 @@ Validates:
     P0-T5: Calibration batch size handling
 """
 
-import pytest
-import torch
 import sys
 from pathlib import Path
+
+import pytest
+import torch
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import D, N_PERSISTENT
-from src.model.skeleton import AtlasMAGSkeleton, AtlasMAGBlock
-from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
-from src.model.persistent_memory import (
-    PersistentMemory,
-    compute_m_persistent,
-    compute_norm_persistent,
-    compute_hash,
-)
-from src.model.projections import QKVProjection, CausalConv1d, RotaryEmbedding
+from src.config import N_PERSISTENT, D
 from src.data.calibration import SimpleCalibrationDataset, create_calibration_loader
 from src.initialization.hash_verify import (
     compute_tensor_hash,
     verify_m_persistent_consistency,
 )
+from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
+from src.model.persistent_memory import (
+    PersistentMemory,
+    compute_m_persistent,
+    compute_norm_persistent,
+)
+from src.model.projections import CausalConv1d, QKVProjection, RotaryEmbedding
+from src.model.skeleton import AtlasMAGBlock, AtlasMAGSkeleton
 
 
 class TestMPersistent:
@@ -225,19 +225,23 @@ class TestAtlasMAGBlock:
         assert ttl_stats is not None or not block.ttl_enabled
 
     def test_gate_value(self):
-        """Gate should be accessible with per-layer initialization."""
-        # Test layer 0 (default): sigmoid(-3.0) ≈ 0.047
+        """Gate should be accessible with per-layer initialization.
+
+        Uses aggressive initialization (0.5-0.62) to prevent gate collapse.
+        Previous conservative values (0.047-0.269) allowed rational gate collapse.
+        """
+        # Test layer 0: sigmoid(0.0) = 0.5
         block_0 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=0, n_layers=12)
         gate_0 = block_0.get_gate_value()
         assert 0 <= gate_0 <= 1
-        # Layer 0 should be attention-focused: sigmoid(-3.0) ≈ 0.047
-        assert 0.04 <= gate_0 <= 0.06
+        # Layer 0 should start at 50% memory: sigmoid(0.0) = 0.5
+        assert 0.48 <= gate_0 <= 0.52
 
-        # Test last layer: sigmoid(-1.0) ≈ 0.269
+        # Test last layer: sigmoid(0.5) ≈ 0.622
         block_11 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=11, n_layers=12)
         gate_11 = block_11.get_gate_value()
-        # Layer 11 should be more memory-focused: sigmoid(-1.0) ≈ 0.269
-        assert 0.25 <= gate_11 <= 0.30
+        # Layer 11 should be more memory-focused: sigmoid(0.5) ≈ 0.622
+        assert 0.60 <= gate_11 <= 0.65
 
         # Verify later layers have higher gates (more memory contribution)
         assert gate_11 > gate_0
