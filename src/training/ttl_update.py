@@ -85,8 +85,8 @@ def ttl_step(
         momentum.mul_(theta).add_(grad)
 
         # Orthogonalize via Newton-Schulz (only for 2D matrices)
-        if momentum.ndim >= 2:
-            # Newton-Schulz expects 2D, handles normalization internally
+        if momentum.ndim == 2:
+            # Newton-Schulz requires exactly 2D input
             update = newton_schulz(momentum, num_iters=ns_iterations)
         else:
             # For 1D tensors (bias), just normalize
