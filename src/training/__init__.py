@@ -29,6 +29,8 @@ from src.training.niah_probe import NIAHProbe, NIAHResult, measure_niah_overhead
 from src.training.telemetry import TelemetryLogger, PPLDeltaTracker, StepMetrics
 from src.training.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
 from src.training.phase2_trainer import Phase2Trainer, Phase2StepResult, run_phase2_validation
+from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
+from src.training.ttl_update import ttl_step, ttl_step_with_grad_clip, TTLUpdater
 
 __all__ = [
     # Polarization
@@ -57,4 +59,10 @@ __all__ = [
     "Phase2Trainer",
     "Phase2StepResult",
     "run_phase2_validation",
+    # TTL (Test-Time Learning)
+    "compute_omega_loss",
+    "compute_omega_loss_with_stats",
+    "ttl_step",
+    "ttl_step_with_grad_clip",
+    "TTLUpdater",
 ]
