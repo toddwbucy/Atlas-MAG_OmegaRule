@@ -85,11 +85,11 @@ With optimal coefficients: a=3.4445, b=-4.7750, c=2.0315
 
 ---
 
-## Design Decisions Needed
+## Design Decisions (DECIDED)
 
-### Decision 1: Where does TTL happen?
+### Decision 1: Where does TTL happen? ✅ DECIDED: Option A
 
-**Option A: Inside forward pass (paper approach)**
+**Inside forward pass (paper approach)**
 ```python
 def forward(self, x):
     # ... compute k, v ...
@@ -103,36 +103,17 @@ def forward(self, x):
     mem_out = self.memory(h, return_contribution=True)
 ```
 
-**Option B: Separate TTL pass**
-```python
-def forward(self, x):
-    # Standard forward (no TTL)
-    ...
+### Decision 2: Gradient computation scope ✅ DECIDED: Option A
 
-def ttl_update(self, k, v, gamma):
-    # Called separately
-    ...
-```
-
-**Recommendation**: Option A matches paper, but Option B is easier to test/debug.
-We could implement B first, then integrate into A.
-
-### Decision 2: Gradient computation scope
-
-**Option A: Full autograd through memory**
+**Full autograd through memory**
 ```python
 loss = omega_loss(self.memory, k, v)
 grads = torch.autograd.grad(loss, self.memory.parameters())
 ```
 
-**Option B: Detached forward, manual backward**
-- More control but more code
+### Decision 3: Momentum state storage ✅ DECIDED: Option A
 
-**Recommendation**: Option A (cleaner, PyTorch handles it)
-
-### Decision 3: Momentum state storage
-
-**Option A: Store in module**
+**Store in module as registered buffers**
 ```python
 class AtlasMemoryPoly(nn.Module):
     def __init__(self):
@@ -140,32 +121,25 @@ class AtlasMemoryPoly(nn.Module):
         self.register_buffer('momentum_w2', ...)
 ```
 
-**Option B: External state manager**
-```python
-class TTLState:
-    def __init__(self, memory_module):
-        self.momentum = {name: torch.zeros_like(p) for name, p in memory_module.named_parameters()}
-```
+This keeps state with module and survives serialization.
 
-**Recommendation**: Option A (keeps state with module, survives serialization)
+### Decision 4: When to reset momentum? ✅ DECIDED: Configurable
 
-### Decision 4: When to reset momentum?
+**Configurable via `TTL_RESET_MODE`**
+- `"sequence"`: Reset at start of each sequence
+- `"batch"`: Reset at start of each batch
+- `"never"`: Never reset (most aggressive, accumulates across training)
 
-- Start of each sequence? (most conservative)
-- Start of each batch?
-- Never within training? (most aggressive)
-- Configurable?
+Default: `"sequence"` (conservative). Configurable allows testing which works best.
 
-**Recommendation**: Configurable, default to per-sequence reset.
+### Decision 5: Training vs Inference TTL ✅ DECIDED: Both (Configurable)
 
-### Decision 5: Training vs Inference TTL
+**TTL happens at BOTH training and inference** - this is the core innovation.
+The whole point of TTL is learning at inference time, not just training.
 
-Should TTL updates happen:
-- **Training only**: Memory learns, but inference is frozen
-- **Both**: True test-time learning (paper approach)
-- **Configurable**: Flag to enable/disable
-
-**Recommendation**: Configurable. Default ON for training, OFF for fast inference.
+Configurable via `TTL_ENABLED` flag for ablation studies:
+- `TTL_ENABLED = True`: Full TTL at train and inference (default)
+- `TTL_ENABLED = False`: Disabled for ablation comparison
 
 ---
 
@@ -348,12 +322,12 @@ class AtlasMAGBlock(nn.Module):
 
 ```python
 # TTL (Test-Time Learning) Configuration
-TTL_ENABLED: bool = True              # Master switch
+TTL_ENABLED: bool = True              # Master switch (both train & inference)
 TTL_THETA: float = 0.9                # Momentum decay
 TTL_ALPHA: float = 0.999              # Weight decay
 TTL_ETA: float = 0.01                 # Memory learning rate
 TTL_NS_ITERATIONS: int = 5            # Newton-Schulz iterations
-TTL_RESET_PER_SEQUENCE: bool = True   # Reset momentum each sequence
+TTL_RESET_MODE: str = "sequence"      # When to reset: "sequence", "batch", "never"
 ```
 
 ---
