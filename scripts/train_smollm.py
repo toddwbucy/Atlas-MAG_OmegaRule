@@ -47,6 +47,7 @@ from src.data.smollm_dataset import (
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
 from src.training.gate_monitor import GateMonitor
+from src.training.niah_probe import NIAHProbe
 from src.training.polarization import compute_gate_statistics, gate_polarization_loss
 from src.utils.logging import get_logger, setup_logging
 
@@ -65,7 +66,9 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 8
-    seq_len: int = 512
+    seq_len: int = 2048  # Increased from 512 to exceed attention window (512)
+    # This forces the model to use memory for long-range dependencies.
+    # With seq_len <= attention window, attention can see everything and memory is redundant.
     epochs: int = 1
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
@@ -73,6 +76,13 @@ class TrainingConfig:
     grad_clip: float = 1.0
     max_steps: Optional[int] = None  # Optional step limit for quick tests
     gradient_accumulation_steps: int = 1  # Accumulate gradients over N micro-batches
+
+    # NIAH (Needle-in-a-Haystack) probes for memory validation
+    # These verify the memory module actually retrieves information, not just trains well
+    niah_enabled: bool = True
+    niah_frequency: int = 500  # Run NIAH probe every N steps
+    niah_haystack_size: int = 100  # Number of distractor keys
+    niah_threshold: float = 0.8  # Minimum accuracy to pass (80%)
 
     # Polarization
     use_polarization: bool = True
@@ -293,6 +303,21 @@ def train(config: TrainingConfig):
         gate_monitor = GateMonitor()
         logger.info("GateMonitor enabled: tracking gate health at steps 100, 500")
 
+    # Initialize NIAH probe for memory retrieval validation
+    # This tests whether memory actually retrieves information, not just trains well
+    niah_probe: NIAHProbe | None = None
+    if config.niah_enabled and not config.disable_memory:
+        niah_probe = NIAHProbe(
+            dim=config.dim,
+            probe_frequency=config.niah_frequency,
+            haystack_size=config.niah_haystack_size,
+            accuracy_threshold=config.niah_threshold,
+        )
+        logger.info(
+            f"NIAHProbe enabled: freq={config.niah_frequency}, "
+            f"haystack={config.niah_haystack_size}, threshold={config.niah_threshold}"
+        )
+
     # Training loop
     logger.info("Starting training...")
     model.train()
@@ -379,6 +404,23 @@ def train(config: TrainingConfig):
                 # Update epoch stats
                 epoch_loss += accum_lm_loss
                 epoch_tokens += accum_tokens
+
+                # NIAH probe: verify memory retrieval is working
+                # Runs at configured frequency to catch memory degradation early
+                # Check BEFORE incrementing global_step so step 0 baseline probe runs
+                if niah_probe is not None and niah_probe.should_probe(global_step):
+                    was_training = model.training
+                    model.train(False)  # Set to eval mode
+                    niah_result = niah_probe.run_probe(model, global_step, config.device)
+                    model.train(was_training)  # Restore training mode
+
+                    if not niah_result.passed:
+                        logger.warning(
+                            f"  [NIAH FAILED] Memory retrieval degraded! "
+                            f"Accuracy: {niah_result.accuracy:.3f} < {config.niah_threshold}"
+                        )
+                    else:
+                        logger.info(f"  [NIAH PASSED] Memory retrieval: {niah_result.accuracy:.3f}")
 
                 global_step += 1
 
@@ -539,7 +581,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--seq-len", type=int, default=512, help="Sequence length")
+    parser.add_argument("--seq-len", type=int, default=2048, help="Sequence length")
     parser.add_argument(
         "--max-steps", type=int, default=None, help="Max training steps (for quick tests)"
     )
@@ -602,6 +644,16 @@ def main():
         "--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)"
     )
 
+    # NIAH probe settings
+    parser.add_argument("--no-niah", action="store_true", help="Disable NIAH probes")
+    parser.add_argument(
+        "--niah-frequency", type=int, default=500, help="NIAH probe frequency (steps)"
+    )
+    parser.add_argument(
+        "--niah-haystack", type=int, default=100, help="NIAH haystack size (distractor keys)"
+    )
+    parser.add_argument("--niah-threshold", type=float, default=0.8, help="NIAH accuracy threshold")
+
     args = parser.parse_args()
 
     # Setup logging (before any other logging calls)
@@ -635,6 +687,11 @@ def main():
         val_every=args.val_every,
         save_every=args.save_every,
         num_workers=args.num_workers,
+        # NIAH probe settings
+        niah_enabled=not args.no_niah,
+        niah_frequency=args.niah_frequency,
+        niah_haystack_size=args.niah_haystack,
+        niah_threshold=args.niah_threshold,
     )
 
     train(config)
