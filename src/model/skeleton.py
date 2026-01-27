@@ -43,7 +43,6 @@ from src.config import (
 from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
 from src.model.persistent_memory import PersistentMemory
 from src.model.projections import QKVProjection, RotaryEmbedding
-from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
 from src.training.omega_loss import compute_omega_loss
@@ -136,7 +135,6 @@ class AtlasMAGBlock(nn.Module):
         memory_expansion: int = MEMORY_EXPANSION,
         ffn_expansion: int = 4,
         disable_memory: bool = False,
-        persistent_memory: Optional[PersistentMemory] = None,
         layer_idx: int = 0,
         n_layers: int = 12,
         # TTL (Test-Time Learning) configuration
@@ -170,17 +168,10 @@ class AtlasMAGBlock(nn.Module):
         # Rotary embeddings
         self.rope = RotaryEmbedding(self.head_dim)
 
-        # Q-K memory projection with Omega Rule
-        # Projects queries through accumulated key outer products
-        self.qk_memory: Optional[CausalQKMemoryProjection] = None
+        # Input-dependent gamma gate for TTL Omega loss weighting
+        # Produces per-position decay modulation (used in TTL update loop)
         self.gamma_gate: Optional[GammaGate] = None
         if not disable_memory:
-            self.qk_memory = CausalQKMemoryProjection(
-                dim=dim,
-                n_heads=n_heads,
-                persistent_memory=persistent_memory,
-            )
-            # Input-dependent gamma gate for context pruning
             self.gamma_gate = GammaGate(dim)
 
         # Memory module: AtlasMemoryPoly (with polynomial features) or AtlasMemory
@@ -452,7 +443,7 @@ class AtlasMAGSkeleton(nn.Module):
         if not disable_memory:
             self.persistent_memory = PersistentMemory(dim, n_persistent)
 
-        # Transformer blocks (pass persistent_memory for Q-K projection)
+        # Transformer blocks with output-level memory combination
         # Each block gets its layer index for per-layer gate initialization
         self.blocks = nn.ModuleList(
             [
@@ -461,7 +452,6 @@ class AtlasMAGSkeleton(nn.Module):
                     n_heads=n_heads,
                     memory_expansion=memory_expansion,
                     disable_memory=disable_memory,
-                    persistent_memory=self.persistent_memory,
                     layer_idx=i,
                     n_layers=n_layers,
                     # TTL configuration
