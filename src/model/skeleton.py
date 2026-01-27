@@ -309,9 +309,25 @@ class AtlasMAGBlock(nn.Module):
         # Apply rotary embeddings
         q, k = self.rope(q, k)
 
+        # === Compute memory-projected queries (shared by TTL and retrieval) ===
+        # CRITICAL: Both TTL training and memory retrieval must use the same key space.
+        # We compute q_mem_flat here and use it for both paths.
+        q_mem_flat: Optional[Tensor] = None
+        if not self.disable_memory and self.qk_memory is not None:
+            # Get gamma gates for decay weighting in Omega Rule
+            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
+
+            # Project queries through accumulated key memory (Omega Rule)
+            # This enables cross-position retrieval: q_mem contains memory from past keys
+            q_mem = self.qk_memory(q, k, gamma)  # (batch, n_heads, seq_len, head_dim)
+
+            # Flatten to (batch, seq_len, dim) for AtlasMemoryPoly
+            q_mem_flat = q_mem.transpose(1, 2).contiguous().view(batch, seq_len, dim)
+
         # === TTL Update (before using memory) ===
-        # Updates memory parameters based on Omega Rule loss
-        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory:
+        # Updates memory parameters based on Omega Rule loss.
+        # IMPORTANT: Uses q_mem_flat as keys to match the retrieval path.
+        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory and q_mem_flat is not None:
             # TTL requires AtlasMemoryPoly with momentum buffers
             from typing import cast as type_cast
 
@@ -321,16 +337,17 @@ class AtlasMAGBlock(nn.Module):
             # for use as target values in Omega loss
             v_flat = v.transpose(1, 2).contiguous().view(batch, seq_len, dim)
 
-            # Get gamma gates for decay weighting (if available)
-            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
+            # Get gamma gates for TTL decay weighting
+            gamma_ttl = self.gamma_gate(h) if self.gamma_gate is not None else None
 
             # Compute Omega loss with gradient enabled for memory parameters
+            # Uses q_mem_flat as keys to match the retrieval path (not h!)
             with torch.enable_grad():
                 omega_loss = compute_omega_loss(
                     memory=memory_poly,
-                    keys=h,  # Use hidden state as keys
+                    keys=q_mem_flat,  # Use projected queries as keys (matches retrieval)
                     values=v_flat,  # Use QKV values as targets
-                    gamma=gamma,
+                    gamma=gamma_ttl,
                     context_window=OMEGA_CONTEXT_WINDOW,
                     decay_base=OMEGA_DECAY_BASE,
                 )
@@ -374,28 +391,13 @@ class AtlasMAGBlock(nn.Module):
         # Project attention output
         attn_out = self.w_o(attn_out)
 
-        # === Memory Branch: Associative retrieval + polynomial capacity ===
-        # Architecture: q,k → [QK Memory Projection] → [AtlasMemoryPoly] → mem_out
-        #
-        # 1. QK Memory Projection (Omega Rule): Projects queries through accumulated
-        #    key outer products for cross-position retrieval. When q ≈ stored k,
-        #    returns information associated with that key.
-        #
-        # 2. AtlasMemoryPoly: Adds O(d_k²) capacity via polynomial features.
-        #    Transforms the retrieved memory for richer representations.
+        # === Memory Branch: Use pre-computed q_mem_flat ===
+        # q_mem_flat was computed earlier (shared with TTL) via:
+        #   q,k → [QK Memory Projection (Omega Rule)] → q_mem_flat
+        # Now we pass it through AtlasMemoryPoly for capacity expansion.
         #
         mem_out: Optional[Tensor] = None
-        if not self.disable_memory and self.qk_memory is not None:
-            # Get gamma gates for decay weighting in Omega Rule
-            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
-
-            # Project queries through accumulated key memory (Omega Rule)
-            # This enables cross-position retrieval: q_mem contains memory from past keys
-            q_mem = self.qk_memory(q, k, gamma)  # (batch, n_heads, seq_len, head_dim)
-
-            # Flatten to (batch, seq_len, dim) for AtlasMemoryPoly
-            q_mem_flat = q_mem.transpose(1, 2).contiguous().view(batch, seq_len, dim)
-
+        if not self.disable_memory and q_mem_flat is not None:
             # Apply polynomial memory for capacity expansion
             # AtlasMemoryPoly adds O(d_k²) capacity to the retrieved memory
             mem_out = self.memory(q_mem_flat, return_contribution=True)
