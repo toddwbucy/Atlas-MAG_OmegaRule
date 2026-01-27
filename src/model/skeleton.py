@@ -43,6 +43,7 @@ from src.config import (
 from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
 from src.model.persistent_memory import PersistentMemory
 from src.model.projections import QKVProjection, RotaryEmbedding
+from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
 from src.training.omega_loss import compute_omega_loss
@@ -135,6 +136,7 @@ class AtlasMAGBlock(nn.Module):
         memory_expansion: int = MEMORY_EXPANSION,
         ffn_expansion: int = 4,
         disable_memory: bool = False,
+        persistent_memory: Optional[PersistentMemory] = None,
         layer_idx: int = 0,
         n_layers: int = 12,
         # TTL (Test-Time Learning) configuration
@@ -168,11 +170,22 @@ class AtlasMAGBlock(nn.Module):
         # Rotary embeddings
         self.rope = RotaryEmbedding(self.head_dim)
 
-        # Input-dependent gamma gate for TTL Omega loss weighting
-        # Produces per-position decay modulation (used in TTL update loop)
+        # Input-dependent gamma gate for Omega Rule decay modulation
+        # Used for both Q-K memory projection and TTL Omega loss
         self.gamma_gate: Optional[GammaGate] = None
         if not disable_memory:
             self.gamma_gate = GammaGate(dim)
+
+        # Q-K memory projection with Omega Rule (associative retrieval)
+        # Projects queries through accumulated key outer products for cross-position retrieval
+        # This is the core mechanism that enables NIAH-style memory recall
+        self.qk_memory: Optional[CausalQKMemoryProjection] = None
+        if not disable_memory:
+            self.qk_memory = CausalQKMemoryProjection(
+                dim=dim,
+                n_heads=n_heads,
+                persistent_memory=persistent_memory,
+            )
 
         # Memory module: AtlasMemoryPoly (with polynomial features) or AtlasMemory
         # Polynomial features are ESSENTIAL for memory capacity (Atlas paper Section 3.1)
@@ -296,9 +309,25 @@ class AtlasMAGBlock(nn.Module):
         # Apply rotary embeddings
         q, k = self.rope(q, k)
 
+        # === Compute memory-projected queries (shared by TTL and retrieval) ===
+        # CRITICAL: Both TTL training and memory retrieval must use the same key space.
+        # We compute q_mem_flat here and use it for both paths.
+        q_mem_flat: Optional[Tensor] = None
+        if not self.disable_memory and self.qk_memory is not None:
+            # Get gamma gates for decay weighting in Omega Rule
+            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
+
+            # Project queries through accumulated key memory (Omega Rule)
+            # This enables cross-position retrieval: q_mem contains memory from past keys
+            q_mem = self.qk_memory(q, k, gamma)  # (batch, n_heads, seq_len, head_dim)
+
+            # Flatten to (batch, seq_len, dim) for AtlasMemoryPoly
+            q_mem_flat = q_mem.transpose(1, 2).contiguous().view(batch, seq_len, dim)
+
         # === TTL Update (before using memory) ===
-        # Updates memory parameters based on Omega Rule loss
-        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory:
+        # Updates memory parameters based on Omega Rule loss.
+        # IMPORTANT: Uses q_mem_flat as keys to match the retrieval path.
+        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory and q_mem_flat is not None:
             # TTL requires AtlasMemoryPoly with momentum buffers
             from typing import cast as type_cast
 
@@ -308,16 +337,17 @@ class AtlasMAGBlock(nn.Module):
             # for use as target values in Omega loss
             v_flat = v.transpose(1, 2).contiguous().view(batch, seq_len, dim)
 
-            # Get gamma gates for decay weighting (if available)
-            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
+            # Get gamma gates for TTL decay weighting
+            gamma_ttl = self.gamma_gate(h) if self.gamma_gate is not None else None
 
             # Compute Omega loss with gradient enabled for memory parameters
+            # Uses q_mem_flat as keys to match the retrieval path (not h!)
             with torch.enable_grad():
                 omega_loss = compute_omega_loss(
                     memory=memory_poly,
-                    keys=h,  # Use hidden state as keys
+                    keys=q_mem_flat,  # Use projected queries as keys (matches retrieval)
                     values=v_flat,  # Use QKV values as targets
-                    gamma=gamma,
+                    gamma=gamma_ttl,
                     context_window=OMEGA_CONTEXT_WINDOW,
                     decay_base=OMEGA_DECAY_BASE,
                 )
@@ -361,11 +391,16 @@ class AtlasMAGBlock(nn.Module):
         # Project attention output
         attn_out = self.w_o(attn_out)
 
-        # === Memory Branch: Gated MLP memory (parallel to attention) ===
+        # === Memory Branch: Use pre-computed q_mem_flat ===
+        # q_mem_flat was computed earlier (shared with TTL) via:
+        #   q,k → [QK Memory Projection (Omega Rule)] → q_mem_flat
+        # Now we pass it through AtlasMemoryPoly for capacity expansion.
+        #
         mem_out: Optional[Tensor] = None
-        if not self.disable_memory:
-            # Get memory contribution (without residual - we handle combination here)
-            mem_out = self.memory(h, return_contribution=True)
+        if not self.disable_memory and q_mem_flat is not None:
+            # Apply polynomial memory for capacity expansion
+            # AtlasMemoryPoly adds O(d_k²) capacity to the retrieved memory
+            mem_out = self.memory(q_mem_flat, return_contribution=True)
 
             # Apply learned gate: controls memory vs attention balance
             # gate ≈ 0: pure attention, gate ≈ 1: pure memory
@@ -444,7 +479,8 @@ class AtlasMAGSkeleton(nn.Module):
             self.persistent_memory = PersistentMemory(dim, n_persistent)
 
         # Transformer blocks with output-level memory combination
-        # Each block gets its layer index for per-layer gate initialization
+        # Each block gets persistent_memory for Q-K memory projection (Omega Rule)
+        # and layer index for per-layer gate initialization
         self.blocks = nn.ModuleList(
             [
                 AtlasMAGBlock(
@@ -452,6 +488,7 @@ class AtlasMAGSkeleton(nn.Module):
                     n_heads=n_heads,
                     memory_expansion=memory_expansion,
                     disable_memory=disable_memory,
+                    persistent_memory=self.persistent_memory,
                     layer_idx=i,
                     n_layers=n_layers,
                     # TTL configuration
