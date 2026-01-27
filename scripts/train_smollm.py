@@ -580,7 +580,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--seq-len", type=int, default=512, help="Sequence length")
+    parser.add_argument("--seq-len", type=int, default=2048, help="Sequence length")
     parser.add_argument(
         "--max-steps", type=int, default=None, help="Max training steps (for quick tests)"
     )
