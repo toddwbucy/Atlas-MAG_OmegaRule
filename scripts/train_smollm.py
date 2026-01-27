@@ -405,6 +405,23 @@ def train(config: TrainingConfig):
                 epoch_loss += accum_lm_loss
                 epoch_tokens += accum_tokens
 
+                # NIAH probe: verify memory retrieval is working
+                # Runs at configured frequency to catch memory degradation early
+                # Check BEFORE incrementing global_step so step 0 baseline probe runs
+                if niah_probe is not None and niah_probe.should_probe(global_step):
+                    was_training = model.training
+                    model.train(False)  # Set to eval mode
+                    niah_result = niah_probe.run_probe(model, global_step, config.device)
+                    model.train(was_training)  # Restore training mode
+
+                    if not niah_result.passed:
+                        logger.warning(
+                            f"  [NIAH FAILED] Memory retrieval degraded! "
+                            f"Accuracy: {niah_result.accuracy:.3f} < {config.niah_threshold}"
+                        )
+                    else:
+                        logger.info(f"  [NIAH PASSED] Memory retrieval: {niah_result.accuracy:.3f}")
+
                 global_step += 1
 
                 # Reset accumulators
@@ -477,22 +494,6 @@ def train(config: TrainingConfig):
                             output_dir / "best_model.pt",
                         )
                         logger.info(f"  [New best!] Saved checkpoint (PPL: {best_val_ppl:.2f})")
-
-                # NIAH probe: verify memory retrieval is working
-                # Runs at configured frequency to catch memory degradation early
-                if niah_probe is not None and niah_probe.should_probe(global_step):
-                    was_training = model.training
-                    model.train(False)  # Set to eval mode
-                    niah_result = niah_probe.run_probe(model, global_step, config.device)
-                    model.train(was_training)  # Restore training mode
-
-                    if not niah_result.passed:
-                        logger.warning(
-                            f"  [NIAH FAILED] Memory retrieval degraded! "
-                            f"Accuracy: {niah_result.accuracy:.3f} < {config.niah_threshold}"
-                        )
-                    else:
-                        logger.info(f"  [NIAH PASSED] Memory retrieval: {niah_result.accuracy:.3f}")
 
                 # Regular checkpoint (only after optimizer step)
                 if global_step % config.save_every == 0 and global_step > 0:
