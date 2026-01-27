@@ -1040,3 +1040,108 @@ class TestCausalQKMemoryProjection:
         for j, expected in enumerate(expected_weights):
             assert abs(weights[0, j].item() - expected) < 1e-6, \
                 f"Weight at j={j}: expected {expected}, got {weights[0, j].item()}"
+
+
+class TestMemoryWiring:
+    """Tests for memory wiring in AtlasMAGBlock.
+
+    Verifies that CausalQKMemoryProjection is properly connected to
+    AtlasMemoryPoly for associative retrieval.
+    """
+
+    def test_block_has_qk_memory(self):
+        """AtlasMAGBlock should have qk_memory when memory is enabled."""
+        from src.model.skeleton import AtlasMAGBlock
+        from src.model.persistent_memory import PersistentMemory
+        from src.model.qk_projection import CausalQKMemoryProjection
+
+        dim = 128
+        n_heads = 4
+        pm = PersistentMemory(dim=dim, n_persistent=16)
+
+        block = AtlasMAGBlock(
+            dim=dim,
+            n_heads=n_heads,
+            disable_memory=False,
+            persistent_memory=pm,
+        )
+
+        assert block.qk_memory is not None, "qk_memory should be initialized"
+        assert isinstance(block.qk_memory, CausalQKMemoryProjection)
+
+    def test_block_qk_memory_disabled_when_no_memory(self):
+        """AtlasMAGBlock should not have qk_memory when memory is disabled."""
+        from src.model.skeleton import AtlasMAGBlock
+
+        block = AtlasMAGBlock(
+            dim=128,
+            n_heads=4,
+            disable_memory=True,
+        )
+
+        assert block.qk_memory is None, "qk_memory should be None when memory disabled"
+
+    def test_memory_output_uses_qk_projection(self):
+        """Memory output should be different from position-wise processing."""
+        from src.model.skeleton import AtlasMAGBlock
+        from src.model.persistent_memory import PersistentMemory
+
+        torch.manual_seed(42)
+
+        dim = 128
+        n_heads = 4
+        pm = PersistentMemory(dim=dim, n_persistent=16)
+
+        block = AtlasMAGBlock(
+            dim=dim,
+            n_heads=n_heads,
+            disable_memory=False,
+            persistent_memory=pm,
+            ttl_enabled=False,  # Disable TTL to isolate memory wiring
+        )
+
+        # Create input where different positions have different content
+        batch = 2
+        seq_len = 64
+        x = torch.randn(batch, seq_len, dim)
+
+        # Forward pass with memory
+        with torch.no_grad():
+            out_with_memory, _ = block(x)
+
+        # For comparison, run without memory
+        block_no_mem = AtlasMAGBlock(
+            dim=dim,
+            n_heads=n_heads,
+            disable_memory=True,
+        )
+        # Copy attention weights to ensure only memory differs
+        block_no_mem.qkv.load_state_dict(block.qkv.state_dict())
+        block_no_mem.w_o.load_state_dict(block.w_o.state_dict())
+        block_no_mem.ffn.load_state_dict(block.ffn.state_dict())
+        block_no_mem.norm1.load_state_dict(block.norm1.state_dict())
+        block_no_mem.norm2.load_state_dict(block.norm2.state_dict())
+
+        with torch.no_grad():
+            out_no_memory, _ = block_no_mem(x)
+
+        # Memory should make a difference
+        diff = (out_with_memory - out_no_memory).abs().mean()
+        assert diff > 1e-6, f"Memory should contribute to output, diff={diff}"
+
+    def test_full_model_has_wired_memory(self):
+        """Full AtlasMAGSkeleton should have wired memory in all blocks."""
+        from src.model.skeleton import AtlasMAGSkeleton
+
+        model = AtlasMAGSkeleton(
+            vocab_size=1000,
+            dim=128,
+            n_layers=2,
+            n_heads=4,
+            n_persistent=16,
+            disable_memory=False,
+        )
+
+        for i, block in enumerate(model.blocks):
+            assert block.qk_memory is not None, f"Block {i} should have qk_memory"
+            assert block.gamma_gate is not None, f"Block {i} should have gamma_gate"
