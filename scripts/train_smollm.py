@@ -49,6 +49,7 @@ from src.model.skeleton import AtlasMAGSkeleton
 from src.training.gate_monitor import GateMonitor
 from src.training.niah_probe import NIAHProbe
 from src.training.polarization import compute_gate_statistics, gate_polarization_loss
+from src.training.validation import run_validation
 from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
@@ -140,37 +141,6 @@ def get_lr_schedule(optimizer, warmup_steps: int, total_steps: int):
             return 0.5 * (1 + math.cos(math.pi * progress))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-
-@torch.no_grad()
-def run_validation(model: nn.Module, loader, device: str) -> dict:
-    """Run validation on model."""
-    model_was_training = model.training
-    model.train(False)
-
-    total_loss = 0.0
-    total_tokens = 0
-    num_batches = 0
-
-    for batch in loader:
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
-
-        logits = model(input_ids)
-        loss = nn.functional.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            labels.view(-1),
-        )
-
-        total_loss += loss.item() * labels.numel()
-        total_tokens += labels.numel()
-        num_batches += 1
-
-    avg_loss = total_loss / total_tokens if total_tokens > 0 else float("inf")
-    ppl = math.exp(min(avg_loss, 20))  # Cap at exp(20) to avoid overflow
-
-    model.train(model_was_training)
-    return {"loss": avg_loss, "ppl": ppl, "num_batches": num_batches, "num_tokens": total_tokens}
 
 
 def train(config: TrainingConfig):
