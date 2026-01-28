@@ -33,7 +33,7 @@ def main():
     print(f"Output directory: {output_dir}\n")
 
     # Initialize analyzer with run directory
-    analyzer = BatchCheckpointAnalyzer(checkpoint_dir, device="cuda")
+    analyzer = BatchCheckpointAnalyzer(checkpoint_dir)
 
     # Analyze all checkpoints
     results = analyzer.analyze_all(verbose=True)

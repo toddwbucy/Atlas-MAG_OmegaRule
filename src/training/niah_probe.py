@@ -131,7 +131,7 @@ class NIAHProbe:
         model: Any,
         step: int,
         device: str = "cpu",
-        **kwargs: Any,
+        **_kwargs: Any,
     ) -> NIAHResult:
         """
         Run a functional memory probe.
