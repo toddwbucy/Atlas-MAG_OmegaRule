@@ -204,12 +204,14 @@ class TTLUpdater:
         eta: float = 0.01,
         ns_iterations: int = 5,
         reset_mode: str = "sequence",
+        adaptive_eta: bool = False,
     ):
         self.theta = theta
         self.alpha = alpha
         self.eta = eta
         self.ns_iterations = ns_iterations
         self.reset_mode = reset_mode
+        self.adaptive_eta = adaptive_eta
 
         self._step_count = 0
         self._sequence_count = 0
@@ -236,6 +238,7 @@ class TTLUpdater:
             alpha=self.alpha,
             eta=self.eta,
             ns_iterations=self.ns_iterations,
+            adaptive_eta=self.adaptive_eta,
         )
 
         self._step_count += 1

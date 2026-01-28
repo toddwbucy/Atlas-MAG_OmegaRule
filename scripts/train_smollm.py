@@ -49,7 +49,6 @@ from src.model.skeleton import AtlasMAGSkeleton
 from src.training.gate_monitor import GateMonitor
 from src.training.niah_probe import NIAHProbe
 from src.training.polarization import compute_gate_statistics, gate_polarization_loss
-from src.training.validation import run_validation
 from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
@@ -82,8 +81,8 @@ class TrainingConfig:
     # These verify the memory module actually retrieves information, not just trains well
     niah_enabled: bool = True
     niah_frequency: int = 500  # Run NIAH probe every N steps
-    niah_haystack_size: int = 100  # Number of distractor keys
-    niah_threshold: float = 0.8  # Minimum accuracy to pass (80%)
+    niah_haystack_size: int = 4  # Number of test sequences for memory probe
+    niah_threshold: float = 0.1  # Min PPL reduction ratio (10%)
 
     # Polarization
     use_polarization: bool = True
@@ -141,6 +140,37 @@ def get_lr_schedule(optimizer, warmup_steps: int, total_steps: int):
             return 0.5 * (1 + math.cos(math.pi * progress))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+@torch.no_grad()
+def run_validation(model: nn.Module, loader, device: str) -> dict:
+    """Run validation on model."""
+    model_was_training = model.training
+    model.train(False)
+
+    total_loss = 0.0
+    total_tokens = 0
+    num_batches = 0
+
+    for batch in loader:
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["labels"].to(device)
+
+        logits = model(input_ids)
+        loss = nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1),
+        )
+
+        total_loss += loss.item() * labels.numel()
+        total_tokens += labels.numel()
+        num_batches += 1
+
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else float("inf")
+    ppl = math.exp(min(avg_loss, 20))  # Cap at exp(20) to avoid overflow
+
+    model.train(model_was_training)
+    return {"loss": avg_loss, "ppl": ppl, "num_batches": num_batches, "num_tokens": total_tokens}
 
 
 def train(config: TrainingConfig):
@@ -338,6 +368,8 @@ def train(config: TrainingConfig):
             labels = batch["labels"].to(config.device)
 
             # Frozen M0: occasionally freeze static memory weights so only TTL can reduce loss
+            # NOTE: We disable TTL on frozen steps because freeze_static_weights()
+            # sets requires_grad=False, which breaks torch.autograd.grad() in ttl_step.
             is_frozen_step = (
                 config.frozen_m0_ratio > 0
                 and not config.disable_memory
@@ -346,6 +378,7 @@ def train(config: TrainingConfig):
             if is_frozen_step:
                 for block in model.blocks:
                     block.memory.freeze_static_weights()
+                    block.ttl_enabled = False
 
             # Forward pass
             logits = model(input_ids)
@@ -376,6 +409,7 @@ def train(config: TrainingConfig):
             if is_frozen_step:
                 for block in model.blocks:
                     block.memory.unfreeze_static_weights()
+                    block.ttl_enabled = True
 
             # Zero memory gradients immediately after backward.
             # Memory params receive gradients from LM loss, but these are never used

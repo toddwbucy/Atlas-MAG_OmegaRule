@@ -84,7 +84,7 @@ class NIAHProbe:
         accuracy_threshold: float = 0.1,
         seq_len: int = 128,
         # Legacy params accepted but ignored for backward compat
-        ttl_steps: int = 10,
+        ttl_steps: int = 10,  # noqa: ARG002
     ):
         self.dim = dim
         self.probe_frequency = probe_frequency
@@ -174,7 +174,8 @@ class NIAHProbe:
             )
             ppl_mem = torch.exp(loss_mem).item()
 
-            # Disable memory across all blocks
+            # Disable memory across all blocks (save/restore original flags)
+            orig_flags = [block.disable_memory for block in model.blocks]
             for block in model.blocks:
                 block.disable_memory = True
 
@@ -185,9 +186,9 @@ class NIAHProbe:
             )
             ppl_nomem = torch.exp(loss_nomem).item()
 
-            # Re-enable memory
-            for block in model.blocks:
-                block.disable_memory = False
+            # Restore original per-block memory flags
+            for block, flag in zip(model.blocks, orig_flags):
+                block.disable_memory = flag
 
         # PPL reduction ratio: how much does memory help?
         if ppl_nomem > 0:

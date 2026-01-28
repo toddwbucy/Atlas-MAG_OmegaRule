@@ -2,7 +2,7 @@
 Phase 3 Unit Tests.
 
 Tests for:
-- Muon optimizer (K=5 Newton-Schulz)
+- Muon optimizer (K=10 Newton-Schulz)
 - Tensorized memory updates (no Python loops)
 - Throughput benchmarking
 - GPU utilization monitoring
@@ -74,12 +74,12 @@ def device():
 
 
 # ============================================================================
-# G3-1: K Unified (K=5 Everywhere)
+# G3-1: K Unified (K=10 Everywhere)
 # ============================================================================
 
 
 class TestKUnified:
-    """Tests for AC-P3-1: K=5 used everywhere."""
+    """Tests for AC-P3-1: K=10 used everywhere."""
 
     def test_config_k_is_10(self):
         """K constant should be 10 (increased from 5 per committee critique #2)."""

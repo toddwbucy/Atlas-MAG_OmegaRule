@@ -40,14 +40,15 @@ from src.config import (
     D,
 )
 
-# Re-export for external access
-__all__ = ["AtlasMAGBlock", "AtlasMAGSkeleton", "GammaGate"]
 from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
 from src.model.projections import QKVProjection, RotaryEmbedding
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
 from src.training.omega_loss import compute_omega_loss
 from src.training.ttl_update import ttl_step
+
+# Re-export for external access
+__all__ = ["AtlasMAGBlock", "AtlasMAGSkeleton", "GammaGate"]
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +512,7 @@ class AtlasMAGSkeleton(nn.Module):
             h = block.norm1(test_input)
 
             # Attention output scale (through w_o)
-            q, k, v = block.qkv(h, reshape_heads=True)
+            _q, _k, v = block.qkv(h, reshape_heads=True)
             attn_rms = block.w_o(v.transpose(1, 2).contiguous().view(1, 32, self.dim)).pow(2).mean().sqrt()
 
             # Memory output scale

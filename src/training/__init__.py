@@ -31,7 +31,6 @@ from src.training.checkpoint import CheckpointManager, CheckpointMetadata, verif
 from src.training.phase2_trainer import Phase2Trainer, Phase2StepResult, run_phase2_validation
 from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
 from src.training.ttl_update import ttl_step, ttl_step_with_grad_clip, TTLUpdater
-from src.training.validation import run_validation
 
 __all__ = [
     # Polarization
@@ -65,6 +64,4 @@ __all__ = [
     "ttl_step",
     "ttl_step_with_grad_clip",
     "TTLUpdater",
-    # Validation
-    "run_validation",
 ]

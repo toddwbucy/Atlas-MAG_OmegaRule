@@ -60,7 +60,7 @@ def main():
         print(f"  Gate std:  {last.gate_std:.4f}")
         print(f"  Gate range: [{last.gate_min:.4f}, {last.gate_max:.4f}]")
 
-        print(f"\nEvolution:")
+        print("\nEvolution:")
         print(f"  Mean change: {last.gate_mean - first.gate_mean:+.4f}")
         print(f"  Std change:  {last.gate_std - first.gate_std:+.4f}")
 
@@ -79,7 +79,7 @@ def main():
     try:
         fig = plot_gate_evolution(analyzer, output_path=output_dir / "gate_evolution.png")
         if fig:
-            print(f"  Saved gate_evolution.png")
+            print("  Saved gate_evolution.png")
         else:
             print("  Skipped gate_evolution.png (no gate data)")
     except Exception as e:
@@ -88,7 +88,7 @@ def main():
     try:
         fig = plot_memory_evolution(analyzer, output_path=output_dir / "memory_evolution.png")
         if fig:
-            print(f"  Saved memory_evolution.png")
+            print("  Saved memory_evolution.png")
         else:
             print("  Skipped memory_evolution.png (no memory data)")
     except Exception as e:

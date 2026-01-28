@@ -49,6 +49,12 @@ class MockModel(nn.Module):
         # Mock gate values
         self._gate_values: List[float] = [0.5] * num_layers
 
+        # Mock blocks with disable_memory attribute (for NIAH probe)
+        self.blocks = nn.ModuleList([
+            type('MockBlock', (nn.Module,), {'__init__': lambda s: (super(type(s), s).__init__(), setattr(s, 'disable_memory', False))[-1], 'forward': lambda s, x: x})()
+            for _ in range(num_layers)
+        ])
+
     def forward(self, input_ids: Tensor) -> Tensor:
         x = self.embed(input_ids)
         for layer in self.layers:

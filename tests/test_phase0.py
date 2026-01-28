@@ -345,30 +345,30 @@ class TestMemoryDropout:
             assert out.shape == x.shape
 
     def test_memory_dropout_not_in_inference(self):
-        """Memory dropout should NOT apply in inference mode."""
+        """Memory dropout should NOT apply in inference mode.
+
+        With 100% dropout rate: training mode skips memory, eval mode runs it.
+        We compare outputs of the SAME block in train vs eval mode.
+        """
+        torch.manual_seed(42)
         block = AtlasMAGBlock(
             dim=128, n_heads=4, memory_dropout_rate=1.0, ttl_enabled=False,
         )
-        block.train(False)
         x = torch.randn(1, 16, 128)
 
-        # In non-training mode, 100% dropout rate should NOT trigger
-        block_no_mem = AtlasMAGBlock(
-            dim=128, n_heads=4, disable_memory=True,
-        )
-        block_no_mem.train(False)
-        block_no_mem.qkv.load_state_dict(block.qkv.state_dict())
-        block_no_mem.w_o.load_state_dict(block.w_o.state_dict())
-        block_no_mem.ffn.load_state_dict(block.ffn.state_dict())
-        block_no_mem.norm1.load_state_dict(block.norm1.state_dict())
-        block_no_mem.norm2.load_state_dict(block.norm2.state_dict())
-
+        # Training mode with 100% dropout — memory skipped
+        block.train(True)
         with torch.no_grad():
-            out_with, _ = block(x)
-            out_without, _ = block_no_mem(x)
+            out_train, _ = block(x)
 
-        diff = (out_with - out_without).abs().mean()
-        assert diff > 1e-6, "Memory should be active in non-training mode despite high dropout rate"
+        # Eval mode — memory should run despite dropout rate
+        block.train(False)
+        with torch.no_grad():
+            out_eval, _ = block(x)
+
+        # Outputs should differ because memory runs in eval but not train
+        diff = (out_train - out_eval).abs().mean()
+        assert diff > 1e-6, "Memory should be active in eval mode despite high dropout rate"
 
 
 class TestGPUCompatibility:

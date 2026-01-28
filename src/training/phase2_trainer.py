@@ -186,8 +186,8 @@ class Phase2Trainer:
         # NIAH probe (if scheduled)
         niah_accuracy = None
         if self.niah_probe.should_probe(step):
-            niah_result = self.niah_probe.run_probe_standalone(
-                step=step, device=str(input_ids.device)
+            niah_result = self.niah_probe.run_probe(
+                model=self.model, step=step, device=str(input_ids.device)
             )
             niah_accuracy = niah_result.accuracy
 
