@@ -32,7 +32,6 @@ from src.config import (
     GAMMA_GATE_HIDDEN_DIM,
     MEMORY_EXPANSION,
     N_HEADS,
-    N_PERSISTENT,
     OMEGA_CONTEXT_WINDOW,
     OMEGA_DECAY_BASE,
     POLY_DEGREE,
@@ -40,14 +39,16 @@ from src.config import (
     VOCAB_SIZE,
     D,
 )
+
 from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
-from src.model.persistent_memory import PersistentMemory
 from src.model.projections import QKVProjection, RotaryEmbedding
-from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
 from src.training.omega_loss import compute_omega_loss
 from src.training.ttl_update import ttl_step
+
+# Re-export for external access
+__all__ = ["AtlasMAGBlock", "AtlasMAGSkeleton", "GammaGate"]
 
 logger = logging.getLogger(__name__)
 
@@ -136,15 +137,20 @@ class AtlasMAGBlock(nn.Module):
         memory_expansion: int = MEMORY_EXPANSION,
         ffn_expansion: int = 4,
         disable_memory: bool = False,
-        persistent_memory: Optional[PersistentMemory] = None,
         layer_idx: int = 0,
         n_layers: int = 12,
+        poly_degree: int = POLY_DEGREE,
         # TTL (Test-Time Learning) configuration
         ttl_enabled: bool = True,
         ttl_theta: float = 0.9,  # Momentum decay
         ttl_alpha: float = 0.999,  # Weight decay
         ttl_eta: float = 0.01,  # Learning rate
         ttl_ns_iters: int = 5,  # Newton-Schulz iterations
+        ttl_adaptive_eta: bool = False,  # Scale eta by inverse gradient norm
+        # Memory dropout: randomly disable memory for this fraction of training steps
+        memory_dropout_rate: float = 0.0,
+        # Polynomial low-rank compression
+        poly_rank: int = 0,
     ):
         super().__init__()
         self.dim = dim
@@ -152,6 +158,7 @@ class AtlasMAGBlock(nn.Module):
         self.head_dim = dim // n_heads
         self.disable_memory = disable_memory
         self.layer_idx = layer_idx
+        self.memory_dropout_rate = memory_dropout_rate
 
         # TTL configuration
         self.ttl_enabled = ttl_enabled and not disable_memory  # TTL requires memory
@@ -159,6 +166,7 @@ class AtlasMAGBlock(nn.Module):
         self.ttl_alpha = ttl_alpha
         self.ttl_eta = ttl_eta
         self.ttl_ns_iters = ttl_ns_iters
+        self.ttl_adaptive_eta = ttl_adaptive_eta
 
         # Normalization layers
         self.norm1 = RMSNorm(dim)
@@ -171,21 +179,10 @@ class AtlasMAGBlock(nn.Module):
         self.rope = RotaryEmbedding(self.head_dim)
 
         # Input-dependent gamma gate for Omega Rule decay modulation
-        # Used for both Q-K memory projection and TTL Omega loss
+        # Used for TTL Omega loss weighting
         self.gamma_gate: Optional[GammaGate] = None
         if not disable_memory:
             self.gamma_gate = GammaGate(dim)
-
-        # Q-K memory projection with Omega Rule (associative retrieval)
-        # Projects queries through accumulated key outer products for cross-position retrieval
-        # This is the core mechanism that enables NIAH-style memory recall
-        self.qk_memory: Optional[CausalQKMemoryProjection] = None
-        if not disable_memory:
-            self.qk_memory = CausalQKMemoryProjection(
-                dim=dim,
-                n_heads=n_heads,
-                persistent_memory=persistent_memory,
-            )
 
         # Memory module: AtlasMemoryPoly (with polynomial features) or AtlasMemory
         # Polynomial features are ESSENTIAL for memory capacity (Atlas paper Section 3.1)
@@ -195,9 +192,10 @@ class AtlasMAGBlock(nn.Module):
             # key_dim = head_dim for polynomial features (capacity theorem uses d_k)
             self.memory: nn.Module = AtlasMemoryPoly(
                 dim=dim,
-                key_dim=self.head_dim,  # Use head_dim for O(d_k^2) capacity
+                key_dim=self.head_dim,  # Use head_dim for O(d_k^p) capacity
                 expansion=memory_expansion,
-                poly_degree=POLY_DEGREE,
+                poly_degree=poly_degree,
+                poly_rank=poly_rank,
             )
         else:
             self.memory = AtlasMemory(dim, memory_expansion)
@@ -227,17 +225,17 @@ class AtlasMAGBlock(nn.Module):
         """
         Compute per-layer gate initialization.
 
-        Uses AGGRESSIVE initialization to prevent gate collapse. Previous
-        conservative values (0.047-0.269) allowed the model to rationally
-        ignore memory in favor of attention because the gradient signal
-        through a nearly-closed gate was too weak to compete.
+        Committee feedback: Previous aggressive init [0.50, 0.62] biased all
+        layers toward memory from step 1, preventing attention from developing
+        useful patterns. Combined with high polarization lambda, gates were
+        pushed further toward memory before attention had a chance.
 
-        The initialization maps to sigmoid values:
-        - Layer 0: sigmoid(0.0) = 0.5 (50% memory)
-        - Layer n-1: sigmoid(0.5) ≈ 0.62 (62% memory)
+        New initialization maps to sigmoid values:
+        - Layer 0: sigmoid(-1.73) ≈ 0.15 (15% memory, attention-favored)
+        - Layer n-1: sigmoid(-0.41) ≈ 0.40 (40% memory, balanced)
 
-        This forces significant signal through the memory module, preventing
-        the optimizer from collapsing gates before memory has a chance to learn.
+        This gives attention a head start in early layers while allowing
+        later layers to develop memory usage organically.
 
         Args:
             layer_idx: Current layer index (0-indexed)
@@ -246,13 +244,10 @@ class AtlasMAGBlock(nn.Module):
         Returns:
             Gate initialization value (pre-sigmoid)
         """
-        # Linear interpolation from 0.0 (early) to 0.5 (late)
-        # This gives sigmoid range [0.5, 0.62] - aggressive initialization
-        # to force signal through memory before the model can collapse gates.
-        # Previous values (0.047-0.269) were too conservative and allowed
-        # the model to rationally ignore memory in favor of attention.
-        gate_start = 0.0  # sigmoid = 0.5
-        gate_end = 0.5  # sigmoid ≈ 0.62
+        # Linear interpolation from -1.73 (early) to -0.41 (late)
+        # sigmoid range [0.15, 0.40] — attention-favored for early layers
+        gate_start = -1.73  # sigmoid ≈ 0.15
+        gate_end = -0.41    # sigmoid ≈ 0.40
 
         if n_layers <= 1:
             return (gate_start + gate_end) / 2
@@ -309,44 +304,26 @@ class AtlasMAGBlock(nn.Module):
         # Apply rotary embeddings
         q, k = self.rope(q, k)
 
-        # === Compute memory-projected queries (shared by TTL and retrieval) ===
-        # CRITICAL: Both TTL training and memory retrieval must use the same key space.
-        # We compute q_mem_flat here and use it for both paths.
-        q_mem_flat: Optional[Tensor] = None
-        if not self.disable_memory and self.qk_memory is not None:
-            # Get gamma gates for decay weighting in Omega Rule
-            gamma = self.gamma_gate(h) if self.gamma_gate is not None else None
-
-            # Project queries through accumulated key memory (Omega Rule)
-            # This enables cross-position retrieval: q_mem contains memory from past keys
-            q_mem = self.qk_memory(q, k, gamma)  # (batch, n_heads, seq_len, head_dim)
-
-            # Flatten to (batch, seq_len, dim) for AtlasMemoryPoly
-            q_mem_flat = q_mem.transpose(1, 2).contiguous().view(batch, seq_len, dim)
-
         # === TTL Update (before using memory) ===
-        # Updates memory parameters based on Omega Rule loss.
-        # IMPORTANT: Uses q_mem_flat as keys to match the retrieval path.
-        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory and q_mem_flat is not None:
-            # TTL requires AtlasMemoryPoly with momentum buffers
+        # Updates memory MLP parameters based on Omega Rule loss (Atlas Eq. 9).
+        # Uses h as keys and v as targets: L = Σ γ_i * ||M(h_i) - v_i||²
+        if self.ttl_enabled and not self.disable_memory and self.use_poly_memory:
             from typing import cast as type_cast
 
             memory_poly = type_cast(AtlasMemoryPoly, self.memory)
 
             # Flatten v from (batch, n_heads, seq_len, head_dim) to (batch, seq_len, dim)
-            # for use as target values in Omega loss
             v_flat = v.transpose(1, 2).contiguous().view(batch, seq_len, dim)
 
             # Get gamma gates for TTL decay weighting
             gamma_ttl = self.gamma_gate(h) if self.gamma_gate is not None else None
 
-            # Compute Omega loss with gradient enabled for memory parameters
-            # Uses q_mem_flat as keys to match the retrieval path (not h!)
+            # Compute Omega loss: trains memory MLP to predict values from hidden states
             with torch.enable_grad():
                 omega_loss = compute_omega_loss(
                     memory=memory_poly,
-                    keys=q_mem_flat,  # Use projected queries as keys (matches retrieval)
-                    values=v_flat,  # Use QKV values as targets
+                    keys=h,  # Hidden states as keys (direct input to memory MLP)
+                    values=v_flat,  # QKV values as targets
                     gamma=gamma_ttl,
                     context_window=OMEGA_CONTEXT_WINDOW,
                     decay_base=OMEGA_DECAY_BASE,
@@ -360,18 +337,17 @@ class AtlasMAGBlock(nn.Module):
                     alpha=self.ttl_alpha,
                     eta=self.ttl_eta,
                     ns_iterations=self.ttl_ns_iters,
+                    adaptive_eta=self.ttl_adaptive_eta,
                 )
                 ttl_stats["omega_loss"] = omega_loss.item()
                 ttl_stats["layer_idx"] = self.layer_idx
 
         # === SWA Branch: Standard scaled dot-product attention ===
-        # Shape: (batch, n_heads, seq_len, seq_len)
         scale = self.head_dim**-0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
 
         # Apply causal mask
         if attention_mask is None:
-            # Create causal mask
             causal_mask = torch.triu(
                 torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
                 diagonal=1,
@@ -381,34 +357,30 @@ class AtlasMAGBlock(nn.Module):
             attn_weights = attn_weights.masked_fill(~attention_mask, float("-inf"))
 
         attn_weights = F.softmax(attn_weights, dim=-1)
-
-        # Attention output
         attn_out = torch.matmul(attn_weights, v)
 
         # Reshape back: (batch, n_heads, seq_len, head_dim) -> (batch, seq_len, dim)
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch, seq_len, dim)
-
-        # Project attention output
         attn_out = self.w_o(attn_out)
 
-        # === Memory Branch: Use pre-computed q_mem_flat ===
-        # q_mem_flat was computed earlier (shared with TTL) via:
-        #   q,k → [QK Memory Projection (Omega Rule)] → q_mem_flat
-        # Now we pass it through AtlasMemoryPoly for capacity expansion.
-        #
+        # === Memory Branch: Direct MLP forward pass ===
+        # Feed hidden states h directly through AtlasMemoryPoly.
+        # The memory MLP is trained via TTL to predict useful associations.
         mem_out: Optional[Tensor] = None
-        if not self.disable_memory and q_mem_flat is not None:
-            # Apply polynomial memory for capacity expansion
-            # AtlasMemoryPoly adds O(d_k²) capacity to the retrieved memory
-            mem_out = self.memory(q_mem_flat, return_contribution=True)
+        # Memory dropout: randomly skip memory to force attention to develop independently
+        memory_dropped = (
+            self.training
+            and self.memory_dropout_rate > 0
+            and torch.rand(1).item() < self.memory_dropout_rate
+        )
+        if not self.disable_memory and not memory_dropped:
+            mem_out = self.memory(h, return_contribution=True)
 
             # Apply learned gate: controls memory vs attention balance
-            # gate ≈ 0: pure attention, gate ≈ 1: pure memory
             gate = torch.sigmoid(self.memory_gate)
             mem_out = gate * mem_out
 
         # === Output-level combination ===
-        # Combine SWA and Memory branches with residual connection
         if mem_out is not None:
             x = x + attn_out + mem_out
         else:
@@ -442,7 +414,6 @@ class AtlasMAGSkeleton(nn.Module):
         dim: Model dimension
         n_layers: Number of transformer blocks
         n_heads: Number of attention heads
-        n_persistent: Number of persistent memory tokens
         memory_expansion: Memory hidden dimension multiplier
     """
 
@@ -452,15 +423,18 @@ class AtlasMAGSkeleton(nn.Module):
         dim: int = D,
         n_layers: int = 6,
         n_heads: int = N_HEADS,
-        n_persistent: int = N_PERSISTENT,
         memory_expansion: int = MEMORY_EXPANSION,
         disable_memory: bool = False,
+        poly_degree: int = POLY_DEGREE,
+        poly_rank: int = 0,
+        memory_dropout_rate: float = 0.0,
         # TTL (Test-Time Learning) configuration
         ttl_enabled: bool = True,
         ttl_theta: float = 0.9,
         ttl_alpha: float = 0.999,
         ttl_eta: float = 0.01,
         ttl_ns_iters: int = 5,
+        ttl_adaptive_eta: bool = False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -473,14 +447,8 @@ class AtlasMAGSkeleton(nn.Module):
         # Token embeddings
         self.tok_emb = nn.Embedding(vocab_size, dim)
 
-        # Persistent memory module (skip if memory disabled)
-        self.persistent_memory: Optional[PersistentMemory] = None
-        if not disable_memory:
-            self.persistent_memory = PersistentMemory(dim, n_persistent)
-
         # Transformer blocks with output-level memory combination
-        # Each block gets persistent_memory for Q-K memory projection (Omega Rule)
-        # and layer index for per-layer gate initialization
+        # Each block gets layer index for per-layer gate initialization
         self.blocks = nn.ModuleList(
             [
                 AtlasMAGBlock(
@@ -488,15 +456,18 @@ class AtlasMAGSkeleton(nn.Module):
                     n_heads=n_heads,
                     memory_expansion=memory_expansion,
                     disable_memory=disable_memory,
-                    persistent_memory=self.persistent_memory,
                     layer_idx=i,
                     n_layers=n_layers,
+                    poly_degree=poly_degree,
+                    poly_rank=poly_rank,
+                    memory_dropout_rate=memory_dropout_rate,
                     # TTL configuration
                     ttl_enabled=ttl_enabled,
                     ttl_theta=ttl_theta,
                     ttl_alpha=ttl_alpha,
                     ttl_eta=ttl_eta,
                     ttl_ns_iters=ttl_ns_iters,
+                    ttl_adaptive_eta=ttl_adaptive_eta,
                 )
                 for i in range(n_layers)
             ]
@@ -514,12 +485,51 @@ class AtlasMAGSkeleton(nn.Module):
         self.w_init = nn.Parameter(torch.zeros(dim))
 
         self._init_weights()
+        self._audit_output_scales()
 
         logger.info(
             f"AtlasMAGSkeleton initialized: "
             f"vocab_size={vocab_size}, dim={dim}, n_layers={n_layers}, "
-            f"n_heads={n_heads}, n_persistent={n_persistent}"
+            f"n_heads={n_heads}, poly_degree={poly_degree}"
         )
+
+    def _audit_output_scales(self) -> None:
+        """
+        Audit memory vs attention output magnitudes at initialization.
+
+        If memory output has significantly different magnitude than attention,
+        the effective gate contribution will be skewed regardless of gate value.
+        Logs a warning if the ratio exceeds 2x in either direction.
+        """
+        if self.disable_memory:
+            return
+
+        with torch.no_grad():
+            # Create random input to measure output scales
+            test_input = torch.randn(1, 32, self.dim)
+            block: AtlasMAGBlock = self.blocks[0]  # type: ignore[assignment]
+
+            h = block.norm1(test_input)
+
+            # Attention output scale (through w_o)
+            _q, _k, v = block.qkv(h, reshape_heads=True)
+            attn_rms = block.w_o(v.transpose(1, 2).contiguous().view(1, 32, self.dim)).pow(2).mean().sqrt()
+
+            # Memory output scale
+            mem_out = block.memory(h, return_contribution=True)
+            mem_rms = mem_out.pow(2).mean().sqrt()
+
+            ratio = mem_rms / attn_rms if attn_rms > 0 else float("inf")
+
+            logger.info(
+                f"Output scale audit: attn_rms={attn_rms:.4f}, mem_rms={mem_rms:.4f}, "
+                f"ratio(mem/attn)={ratio:.2f}"
+            )
+            if ratio > 2.0 or ratio < 0.5:
+                logger.warning(
+                    f"Memory/attention output scale mismatch: ratio={ratio:.2f}. "
+                    f"Effective gate contribution will be skewed."
+                )
 
     def _init_weights(self):
         """Initialize model weights."""
@@ -608,6 +618,8 @@ class AtlasMAGSkeleton(nn.Module):
                 memory_states.append(mem.proj_down.weight.flatten())
             if hasattr(mem, "proj_up"):
                 memory_states.append(mem.proj_up.weight.flatten())
+            if hasattr(mem, "poly_compress") and mem.poly_compress is not None:
+                memory_states.append(mem.poly_compress.weight.flatten())
 
         memory_state = torch.cat(memory_states)
 
@@ -723,11 +735,6 @@ class AtlasMAGSkeleton(nn.Module):
     def count_parameters(self) -> dict:
         """Count parameters by component."""
         embedding = sum(p.numel() for p in self.tok_emb.parameters())
-        persistent = (
-            sum(p.numel() for p in self.persistent_memory.parameters())
-            if self.persistent_memory is not None
-            else 0
-        )
         blocks = sum(sum(p.numel() for p in block.parameters()) for block in self.blocks)
         head = 0  # Tied with embeddings
 
@@ -735,7 +742,6 @@ class AtlasMAGSkeleton(nn.Module):
 
         return {
             "embedding": embedding,
-            "persistent_memory": persistent,
             "blocks": blocks,
             "lm_head": head,
             "total": total,

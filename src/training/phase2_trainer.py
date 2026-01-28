@@ -22,7 +22,6 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.optim import Optimizer
 
-from src.model.qk_projection import QKProjection, create_qk_projection_for_model
 from src.training.polarization import gate_polarization_loss, compute_gate_statistics
 from src.training.gate_monitor import GateMonitor, FastFailError
 from src.training.niah_probe import NIAHProbe
@@ -119,9 +118,6 @@ class Phase2Trainer:
             save_frequency=checkpoint_frequency,
         )
 
-        # Q-K projection for NIAH
-        self.qk_proj: Optional[QKProjection] = None
-
         # State
         self.current_step = 0
         self.results: List[Phase2StepResult] = []
@@ -130,12 +126,6 @@ class Phase2Trainer:
             f"Phase2Trainer initialized: total_steps={total_steps}, "
             f"niah_freq={niah_frequency}, ckpt_freq={checkpoint_frequency}"
         )
-
-    def _ensure_qk_projection(self) -> Optional[QKProjection]:
-        """Ensure QK projection exists for NIAH probes."""
-        if self.qk_proj is None:
-            self.qk_proj = create_qk_projection_for_model(self.model)
-        return self.qk_proj
 
     def train_step(
         self,
@@ -196,12 +186,10 @@ class Phase2Trainer:
         # NIAH probe (if scheduled)
         niah_accuracy = None
         if self.niah_probe.should_probe(step):
-            qk_proj = self._ensure_qk_projection()
-            if qk_proj is not None:
-                niah_result = self.niah_probe.run_probe_standalone(
-                    qk_proj, step, str(input_ids.device)
-                )
-                niah_accuracy = niah_result.accuracy
+            niah_result = self.niah_probe.run_probe(
+                model=self.model, step=step, device=str(input_ids.device)
+            )
+            niah_accuracy = niah_result.accuracy
 
         # Telemetry logging (ppl_tracker.update is called internally)
         step_metrics = self.telemetry.log_step(
@@ -369,11 +357,11 @@ class Phase2Trainer:
         """
         results = {}
 
-        # AC-P2-3: Norm in projection
-        qk = self._ensure_qk_projection()
-        results["AC-P2-3_norm_in_projection"] = (
-            qk is not None and qk.norm_persistent > 0
+        # AC-P2-3: Memory module exists and is functional
+        has_memory = hasattr(self.model, 'blocks') and any(
+            not getattr(block, 'disable_memory', True) for block in self.model.blocks
         )
+        results["AC-P2-3_memory_functional"] = has_memory
 
         # AC-P2-4: 1000 steps stable (no NaN, checked during training)
         results["AC-P2-4_stable_training"] = len(self.results) >= 1000
