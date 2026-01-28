@@ -81,14 +81,14 @@ def device():
 class TestKUnified:
     """Tests for AC-P3-1: K=5 used everywhere."""
 
-    def test_config_k_is_5(self):
-        """K constant should be 5."""
-        assert K == 5
+    def test_config_k_is_10(self):
+        """K constant should be 10 (increased from 5 per committee critique #2)."""
+        assert K == 10
 
     def test_muon_default_k(self, simple_model):
-        """Muon optimizer should default to K=5."""
+        """Muon optimizer should default to K=10."""
         optimizer = Muon(simple_model.parameters())
-        assert optimizer.get_k() == 5
+        assert optimizer.get_k() == 10
 
     def test_muon_explicit_k(self, simple_model):
         """Muon optimizer should use explicit K."""
@@ -309,7 +309,7 @@ class TestMuonOptimizer:
 
         summary = optimizer.get_state_summary()
 
-        assert summary['k'] == 5
+        assert summary['k'] == 10
         assert summary['current_step'] == 5
         assert summary['total_params'] > 0
         assert summary['orthogonalized_params'] > 0
@@ -467,13 +467,13 @@ class TestAcceptanceCriteria:
     """Tests for Phase 3 acceptance criteria."""
 
     def test_ac_p3_1_k_unified(self, simple_model):
-        """AC-P3-1: K should be 5 everywhere."""
+        """AC-P3-1: K should be 10 everywhere (increased per committee critique #2)."""
         # Config
-        assert K == 5
+        assert K == 10
 
         # Muon optimizer
         optimizer = Muon(simple_model.parameters())
-        assert optimizer.get_k() == 5
+        assert optimizer.get_k() == 10
 
     def test_ac_p3_2_no_python_loops(self):
         """AC-P3-2: Memory operations should be tensorized."""

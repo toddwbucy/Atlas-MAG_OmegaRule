@@ -227,21 +227,21 @@ class TestAtlasMAGBlock:
     def test_gate_value(self):
         """Gate should be accessible with per-layer initialization.
 
-        Uses aggressive initialization (0.5-0.62) to prevent gate collapse.
-        Previous conservative values (0.047-0.269) allowed rational gate collapse.
+        Attention-favored initialization (0.15-0.40) per committee feedback.
+        Early layers favor attention, later layers more balanced.
         """
-        # Test layer 0: sigmoid(0.0) = 0.5
+        # Test layer 0: sigmoid(-1.73) ≈ 0.15
         block_0 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=0, n_layers=12)
         gate_0 = block_0.get_gate_value()
         assert 0 <= gate_0 <= 1
-        # Layer 0 should start at 50% memory: sigmoid(0.0) = 0.5
-        assert 0.48 <= gate_0 <= 0.52
+        # Layer 0 should start at ~15% memory (attention-favored)
+        assert 0.13 <= gate_0 <= 0.18
 
-        # Test last layer: sigmoid(0.5) ≈ 0.622
+        # Test last layer: sigmoid(-0.41) ≈ 0.40
         block_11 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=11, n_layers=12)
         gate_11 = block_11.get_gate_value()
-        # Layer 11 should be more memory-focused: sigmoid(0.5) ≈ 0.622
-        assert 0.60 <= gate_11 <= 0.65
+        # Layer 11 should be more balanced: ~40% memory
+        assert 0.38 <= gate_11 <= 0.43
 
         # Verify later layers have higher gates (more memory contribution)
         assert gate_11 > gate_0
@@ -257,7 +257,6 @@ class TestAtlasMAGSkeleton:
             dim=128,
             n_layers=2,
             n_heads=4,
-            n_persistent=16,
         )
         input_ids = torch.randint(0, 1000, (2, 64))
         logits = model(input_ids)
@@ -317,6 +316,59 @@ class TestCalibrationData:
 
         batch = next(iter(loader))
         assert batch.shape == (4, 64)
+
+
+class TestMemoryDropout:
+    """Tests for memory dropout (committee critique #1)."""
+
+    def test_memory_dropout_skips_memory(self):
+        """When memory dropout triggers, mem_out should be None (added to nothing)."""
+        # Set dropout to 100% so it always triggers
+        block = AtlasMAGBlock(
+            dim=128, n_heads=4, memory_dropout_rate=1.0, ttl_enabled=False,
+        )
+        block.train()
+        x = torch.randn(1, 16, 128)
+        out, _ = block(x)
+        # Output should still be valid (attention-only path)
+        assert out.shape == x.shape
+
+    def test_memory_dropout_zero_rate_never_skips(self):
+        """With dropout=0, memory always runs."""
+        block = AtlasMAGBlock(
+            dim=128, n_heads=4, memory_dropout_rate=0.0, ttl_enabled=False,
+        )
+        block.train()
+        x = torch.randn(1, 16, 128)
+        for _ in range(5):
+            out, _ = block(x)
+            assert out.shape == x.shape
+
+    def test_memory_dropout_not_in_inference(self):
+        """Memory dropout should NOT apply in inference mode."""
+        block = AtlasMAGBlock(
+            dim=128, n_heads=4, memory_dropout_rate=1.0, ttl_enabled=False,
+        )
+        block.train(False)
+        x = torch.randn(1, 16, 128)
+
+        # In non-training mode, 100% dropout rate should NOT trigger
+        block_no_mem = AtlasMAGBlock(
+            dim=128, n_heads=4, disable_memory=True,
+        )
+        block_no_mem.train(False)
+        block_no_mem.qkv.load_state_dict(block.qkv.state_dict())
+        block_no_mem.w_o.load_state_dict(block.w_o.state_dict())
+        block_no_mem.ffn.load_state_dict(block.ffn.state_dict())
+        block_no_mem.norm1.load_state_dict(block.norm1.state_dict())
+        block_no_mem.norm2.load_state_dict(block.norm2.state_dict())
+
+        with torch.no_grad():
+            out_with, _ = block(x)
+            out_without, _ = block_no_mem(x)
+
+        diff = (out_with - out_without).abs().mean()
+        assert diff > 1e-6, "Memory should be active in non-training mode despite high dropout rate"
 
 
 class TestGPUCompatibility:

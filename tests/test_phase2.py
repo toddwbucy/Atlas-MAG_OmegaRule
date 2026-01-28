@@ -2,7 +2,6 @@
 Phase 2 Unit Tests.
 
 Tests for:
-- Q-K Projection with normalization (REQ-P2-001)
 - NIAH retrieval probes (REQ-P2-002)
 - PPL delta telemetry (REQ-P2-003)
 - Checkpoint and rollback (REQ-P2-003)
@@ -21,7 +20,6 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from src.model.qk_projection import QKProjection, create_qk_projection_for_model
 from src.training.niah_probe import NIAHProbe, NIAHResult
 from src.training.telemetry import TelemetryLogger, PPLDeltaTracker, StepMetrics
 from src.training.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
@@ -31,17 +29,6 @@ from src.training.phase2_trainer import Phase2Trainer, Phase2StepResult
 # ============================================================================
 # Test Fixtures
 # ============================================================================
-
-
-class MockPersistentMemory:
-    """Mock persistent memory for testing QKProjection."""
-
-    def __init__(self, dim: int = 64):
-        self.dim = dim
-        # Create random M_persistent
-        keys = torch.randn(10, dim)
-        self.m_persistent = sum(torch.outer(k, k) for k in keys)
-        self.norm_persistent = float(sum(k.norm() ** 2 for k in keys))
 
 
 class MockModel(nn.Module):
@@ -61,9 +48,6 @@ class MockModel(nn.Module):
 
         # Mock gate values
         self._gate_values: List[float] = [0.5] * num_layers
-
-        # Mock persistent memory for NIAH
-        self.persistent_memory = MockPersistentMemory(dim)
 
     def forward(self, input_ids: Tensor) -> Tensor:
         x = self.embed(input_ids)
@@ -92,138 +76,6 @@ def temp_dir():
     shutil.rmtree(path, ignore_errors=True)
 
 
-@pytest.fixture
-def qk_projection():
-    """Create a QKProjection for testing."""
-    dim = 64
-    pm = MockPersistentMemory(dim)
-    return QKProjection(dim=dim, m_persistent=pm.m_persistent, norm_persistent=pm.norm_persistent)
-
-
-# ============================================================================
-# QKProjection Tests (REQ-P2-001)
-# ============================================================================
-
-
-class TestQKProjection:
-    """Tests for Q-K Projection with normalization."""
-
-    def test_qk_projection_init(self, qk_projection):
-        """QKProjection should initialize with correct state."""
-        assert qk_projection.dim == 64
-        assert qk_projection.norm_persistent > 0
-        assert not qk_projection._initialized
-
-    def test_reset_at_shard_boundary(self, qk_projection):
-        """Reset should inject both M_persistent and norm_persistent."""
-        qk_projection.reset_at_shard_boundary()
-
-        # Verify M_t equals M_persistent
-        assert torch.allclose(qk_projection.M_t, qk_projection.m_persistent)
-
-        # Verify norm_sum equals norm_persistent (AC-P2-3)
-        assert qk_projection.norm_sum == qk_projection.norm_persistent
-
-        # Verify initialized flag
-        assert qk_projection._initialized
-
-    def test_update_single_key(self, qk_projection):
-        """Update should accumulate key outer product."""
-        qk_projection.reset_at_shard_boundary()
-        initial_norm = qk_projection.norm_sum
-
-        key = torch.randn(64)
-        qk_projection.update(key)
-
-        # norm_sum should increase
-        assert qk_projection.norm_sum > initial_norm
-
-        # M_t should change
-        expected_delta = torch.outer(key, key)
-        # Can't easily verify M_t, but verify it's updated
-        assert qk_projection._initialized
-
-    def test_update_batch_keys(self, qk_projection):
-        """Update should handle batched keys."""
-        qk_projection.reset_at_shard_boundary()
-        initial_norm = qk_projection.norm_sum
-
-        keys = torch.randn(5, 64)  # Batch of 5 keys
-        qk_projection.update(keys)
-
-        # norm_sum should increase by sum of squared norms
-        expected_increase = (keys.norm(dim=-1) ** 2).sum().item()
-        assert abs(qk_projection.norm_sum - initial_norm - expected_increase) < 1e-4
-
-    def test_project_single_query(self, qk_projection):
-        """Project should return scaled query."""
-        qk_projection.reset_at_shard_boundary()
-
-        query = torch.randn(64)
-        projected = qk_projection.project(query)
-
-        # Should have same shape
-        assert projected.shape == query.shape
-
-        # Should not be zero (unless query is orthogonal to all keys)
-        # For random data, this is extremely unlikely
-
-    def test_project_batch_queries(self, qk_projection):
-        """Project should handle batched queries."""
-        qk_projection.reset_at_shard_boundary()
-
-        queries = torch.randn(5, 64)  # Batch of 5 queries
-        projected = qk_projection.project(queries)
-
-        assert projected.shape == queries.shape
-
-    def test_project_before_reset(self, qk_projection):
-        """Project before reset should auto-initialize."""
-        assert not qk_projection._initialized
-
-        query = torch.randn(64)
-        projected = qk_projection.project(query)
-
-        # Should have auto-initialized
-        assert qk_projection._initialized
-        assert projected.shape == query.shape
-
-    def test_inject_and_query_memory(self, qk_projection):
-        """Inject and query should work for NIAH testing."""
-        qk_projection.reset_at_shard_boundary()
-        qk_projection.clear_stored_values()
-
-        key = torch.randn(64)
-        key = key / key.norm()  # Normalize
-        value = torch.randn(64)
-        value = value / value.norm()
-
-        qk_projection.inject_memory(key, value)
-
-        # Query should return something
-        result = qk_projection.query_memory(key)
-        assert result.shape == key.shape
-
-    def test_clear_stored_values(self, qk_projection):
-        """Clear should remove stored values."""
-        key = torch.randn(64)
-        value = torch.randn(64)
-
-        qk_projection.inject_memory(key, value)
-        assert len(qk_projection._stored_values) > 0
-
-        qk_projection.clear_stored_values()
-        assert len(qk_projection._stored_values) == 0
-
-    def test_create_qk_projection_for_model(self, mock_model):
-        """Should create QKProjection from model's persistent memory."""
-        qk = create_qk_projection_for_model(mock_model)
-
-        assert qk is not None
-        assert qk.dim == 64
-        assert qk.norm_persistent > 0
-
-
 # ============================================================================
 # NIAH Probe Tests (REQ-P2-002)
 # ============================================================================
@@ -239,7 +91,7 @@ class TestNIAHProbe:
         assert probe.dim == 64
         assert probe.probe_frequency == 100
         assert probe.haystack_size == 50
-        assert probe.accuracy_threshold == 0.8  # Default
+        assert probe.accuracy_threshold == 0.1  # Default: 10% PPL reduction
         assert len(probe.history) == 0
 
     def test_should_probe_step_zero(self):
@@ -256,51 +108,51 @@ class TestNIAHProbe:
         assert probe.should_probe(50) is False
         assert probe.should_probe(150) is False
 
-    def test_run_probe_standalone(self, qk_projection):
+    def test_run_probe_standalone(self):
         """Run probe should return NIAHResult."""
-        probe = NIAHProbe(dim=64, probe_frequency=100, haystack_size=10)
+        probe = NIAHProbe(dim=64, probe_frequency=100, haystack_size=5, ttl_steps=3)
 
-        result = probe.run_probe_standalone(qk_projection, step=0)
+        result = probe.run_probe_standalone(step=0)
 
         assert isinstance(result, NIAHResult)
         assert result.step == 0
-        # Cosine similarity ranges from -1 to 1
-        assert -1.0 <= result.accuracy <= 1.0
-        assert result.haystack_size == 10
+        # Standalone returns dummy result (no model)
+        assert result.accuracy == 0.0
+        assert result.passed is False
+        assert result.haystack_size == 5
         assert result.probe_time_ms > 0
 
-    def test_probe_history_tracking(self, qk_projection):
+    def test_probe_history_tracking(self):
         """Probe should track history."""
-        probe = NIAHProbe(dim=64, probe_frequency=100)
+        probe = NIAHProbe(dim=64, probe_frequency=100, haystack_size=3, ttl_steps=2)
 
-        probe.run_probe_standalone(qk_projection, step=0)
-        probe.run_probe_standalone(qk_projection, step=100)
-        probe.run_probe_standalone(qk_projection, step=200)
+        probe.run_probe_standalone(step=0)
+        probe.run_probe_standalone(step=100)
+        probe.run_probe_standalone(step=200)
 
         assert len(probe.history) == 3
         assert [r.step for r in probe.history] == [0, 100, 200]
 
-    def test_get_statistics(self, qk_projection):
+    def test_get_statistics(self):
         """Statistics should aggregate results."""
-        probe = NIAHProbe(dim=64, probe_frequency=100)
+        probe = NIAHProbe(dim=64, probe_frequency=100, haystack_size=3, ttl_steps=2)
 
         # Run a few probes
         for step in [0, 100, 200]:
-            probe.run_probe_standalone(qk_projection, step=step)
+            probe.run_probe_standalone(step=step)
 
         stats = probe.get_statistics()
 
         assert stats["num_probes"] == 3
-        assert 0.0 <= stats["pass_rate"] <= 1.0
-        # Cosine similarity ranges from -1 to 1
-        assert -1.0 <= stats["mean_accuracy"] <= 1.0
+        assert stats["pass_rate"] == 0.0  # Standalone always fails
+        assert stats["mean_accuracy"] == 0.0
         assert "latest_accuracy" in stats
 
-    def test_probe_reset(self, qk_projection):
+    def test_probe_reset(self):
         """Reset should clear history."""
-        probe = NIAHProbe(dim=64)
+        probe = NIAHProbe(dim=64, haystack_size=3, ttl_steps=2)
 
-        probe.run_probe_standalone(qk_projection, step=0)
+        probe.run_probe_standalone(step=0)
         assert len(probe.history) == 1
 
         probe.reset()
@@ -639,7 +491,7 @@ class TestCheckpointManager:
     def verify_rollback_trigger_function(self, mock_model, temp_dir):
         """verify_rollback_trigger should pass."""
         optimizer = torch.optim.Adam(mock_model.parameters())
-        result = verify_rollback_trigger(mock_model, optimizer, temp_dir)
+        result = verify_rollback_trigger(mock_model, optimizer)
         assert result is True
 
 
@@ -731,24 +583,15 @@ class TestPhase2Trainer:
 class TestAcceptanceCriteria:
     """Tests for Phase 2 acceptance criteria."""
 
-    def test_ac_p2_3_norm_in_projection(self, qk_projection):
-        """AC-P2-3: norm_persistent must be in projection denominator."""
-        # This is verified by checking norm_persistent is positive
-        # and used in reset_at_shard_boundary
-        assert qk_projection.norm_persistent > 0
-
-        qk_projection.reset_at_shard_boundary()
-        assert qk_projection.norm_sum == qk_projection.norm_persistent
-
-    def test_ac_p2_5_niah_threshold(self, qk_projection):
+    def test_ac_p2_5_niah_threshold(self):
         """AC-P2-5: NIAH threshold is 80%."""
-        probe = NIAHProbe(dim=64, accuracy_threshold=0.8)
+        probe = NIAHProbe(dim=64, accuracy_threshold=0.8, haystack_size=3, ttl_steps=2)
 
         # Verify threshold is set correctly
         assert probe.accuracy_threshold == 0.8
 
         # Run probe and check pass/fail logic
-        result = probe.run_probe_standalone(qk_projection, step=0)
+        result = probe.run_probe_standalone(step=0)
 
         if result.accuracy >= 0.8:
             assert result.passed is True
@@ -758,7 +601,7 @@ class TestAcceptanceCriteria:
     def test_ac_p2_6_rollback_tested(self, mock_model, temp_dir):
         """AC-P2-6: Rollback must be testable."""
         optimizer = torch.optim.Adam(mock_model.parameters())
-        result = verify_rollback_trigger(mock_model, optimizer, temp_dir)
+        result = verify_rollback_trigger(mock_model, optimizer)
         assert result is True
 
     def test_ac_p2_7_ppl_delta_visible(self, temp_dir):
@@ -845,262 +688,57 @@ class TestPhase2Integration:
 
 
 # ============================================================================
-# Causal QK Memory Projection Parallelization Tests
+# Memory Wiring Tests (Updated for direct AtlasMemoryPoly)
 # ============================================================================
-
-
-class TestCausalQKMemoryProjection:
-    """Tests for CausalQKMemoryProjection parallelization."""
-
-    @pytest.fixture
-    def causal_projection(self):
-        """Create a CausalQKMemoryProjection for testing."""
-        from src.model.qk_projection import CausalQKMemoryProjection
-
-        dim = 64
-        n_heads = 4
-        pm = MockPersistentMemory(dim)
-
-        # Create a mock object with the expected interface
-        class MockPM:
-            def __init__(self, m_persistent, norm_persistent):
-                self.m_persistent = m_persistent
-                self.norm_persistent = norm_persistent
-
-        mock_pm = MockPM(pm.m_persistent, pm.norm_persistent)
-
-        return CausalQKMemoryProjection(
-            dim=dim,
-            n_heads=n_heads,
-            persistent_memory=mock_pm,
-            context_window=32,
-            decay_base=0.99,
-        )
-
-    def test_chunked_matches_sequential_basic(self, causal_projection):
-        """Chunked implementation should match sequential for basic case."""
-        torch.manual_seed(42)
-
-        batch = 2
-        n_heads = 4
-        seq_len = 64
-        head_dim = 16
-
-        q = torch.randn(batch, n_heads, seq_len, head_dim)
-        k = torch.randn(batch, n_heads, seq_len, head_dim)
-
-        # Run both implementations
-        out_seq = causal_projection.forward_sequential(q, k, gamma_gates=None)
-        out_chunk = causal_projection.forward_chunked(q, k, gamma_gates=None)
-
-        # Check numerical equivalence
-        assert out_seq.shape == out_chunk.shape, f"Shape mismatch: {out_seq.shape} vs {out_chunk.shape}"
-        assert torch.allclose(out_seq, out_chunk, rtol=1e-4, atol=1e-6), \
-            f"Max diff: {(out_seq - out_chunk).abs().max().item()}"
-
-    def test_chunked_matches_sequential_with_gamma_gates(self, causal_projection):
-        """Chunked implementation should match sequential with gamma gates."""
-        torch.manual_seed(123)
-
-        batch = 2
-        n_heads = 4
-        seq_len = 64
-        head_dim = 16
-
-        q = torch.randn(batch, n_heads, seq_len, head_dim)
-        k = torch.randn(batch, n_heads, seq_len, head_dim)
-        gamma_gates = torch.sigmoid(torch.randn(batch, seq_len, 1))
-
-        # Run both implementations
-        out_seq = causal_projection.forward_sequential(q, k, gamma_gates=gamma_gates)
-        out_chunk = causal_projection.forward_chunked(q, k, gamma_gates=gamma_gates)
-
-        # Check numerical equivalence
-        assert torch.allclose(out_seq, out_chunk, rtol=1e-4, atol=1e-6), \
-            f"Max diff with gamma_gates: {(out_seq - out_chunk).abs().max().item()}"
-
-    def test_chunked_matches_sequential_long_sequence(self, causal_projection):
-        """Chunked implementation should match sequential for longer sequences."""
-        torch.manual_seed(456)
-
-        batch = 1
-        n_heads = 4
-        seq_len = 256  # Longer sequence spans multiple chunks
-        head_dim = 16
-
-        q = torch.randn(batch, n_heads, seq_len, head_dim)
-        k = torch.randn(batch, n_heads, seq_len, head_dim)
-
-        # Run both implementations
-        out_seq = causal_projection.forward_sequential(q, k, gamma_gates=None)
-        out_chunk = causal_projection.forward_chunked(q, k, gamma_gates=None, chunk_size=64)
-
-        # Check numerical equivalence
-        assert torch.allclose(out_seq, out_chunk, rtol=1e-4, atol=1e-6), \
-            f"Max diff for long seq: {(out_seq - out_chunk).abs().max().item()}"
-
-    def test_chunked_different_chunk_sizes(self, causal_projection):
-        """Different chunk sizes should produce same results."""
-        torch.manual_seed(789)
-
-        batch = 2
-        n_heads = 4
-        seq_len = 128
-        head_dim = 16
-
-        q = torch.randn(batch, n_heads, seq_len, head_dim)
-        k = torch.randn(batch, n_heads, seq_len, head_dim)
-
-        # Reference: sequential
-        out_ref = causal_projection.forward_sequential(q, k, gamma_gates=None)
-
-        # Test various chunk sizes
-        for chunk_size in [16, 32, 64, 128]:
-            out_chunk = causal_projection.forward_chunked(q, k, gamma_gates=None, chunk_size=chunk_size)
-            assert torch.allclose(out_ref, out_chunk, rtol=1e-4, atol=1e-6), \
-                f"Chunk size {chunk_size}: max diff = {(out_ref - out_chunk).abs().max().item()}"
-
-    def test_forward_uses_chunked(self, causal_projection):
-        """Default forward() should use chunked implementation."""
-        torch.manual_seed(111)
-
-        batch = 2
-        n_heads = 4
-        seq_len = 64
-        head_dim = 16
-
-        q = torch.randn(batch, n_heads, seq_len, head_dim)
-        k = torch.randn(batch, n_heads, seq_len, head_dim)
-
-        # forward() should match forward_chunked()
-        out_forward = causal_projection.forward(q, k, gamma_gates=None)
-        out_chunked = causal_projection.forward_chunked(q, k, gamma_gates=None)
-
-        assert torch.allclose(out_forward, out_chunked, rtol=1e-6, atol=1e-8), \
-            "forward() should be identical to forward_chunked()"
-
-    def test_build_chunk_decay_weights_shape(self, causal_projection):
-        """_build_chunk_decay_weights should return correct shape."""
-        device = torch.device('cpu')
-        dtype = torch.float32
-
-        # Test case: chunk from position 64 to 128, context from 32
-        weights = causal_projection._build_chunk_decay_weights(
-            chunk_start=64,
-            chunk_end=128,
-            context_start=32,
-            device=device,
-            dtype=dtype,
-        )
-
-        # Expected shape: (chunk_len, max_context_len) = (64, 96)
-        assert weights.shape == (64, 96), f"Wrong shape: {weights.shape}"
-
-    def test_build_chunk_decay_weights_causality(self, causal_projection):
-        """Decay weights should be zero for future positions (causal)."""
-        device = torch.device('cpu')
-        dtype = torch.float32
-
-        weights = causal_projection._build_chunk_decay_weights(
-            chunk_start=10,
-            chunk_end=20,
-            context_start=5,
-            device=device,
-            dtype=dtype,
-        )  # (10, 15)
-
-        # For each row i (position 10+i), columns j where (5+j) >= (10+i) should be 0
-        for i in range(10):
-            pos_t = 10 + i  # Query position
-            for j in range(15):
-                pos_j = 5 + j  # Key position
-                if pos_j >= pos_t:  # Future or same position
-                    assert weights[i, j] == 0.0, \
-                        f"Non-zero weight at t={pos_t}, j={pos_j}: {weights[i, j]}"
-
-    def test_build_chunk_decay_weights_decay_values(self, causal_projection):
-        """Decay weights should follow exponential decay pattern."""
-        device = torch.device('cpu')
-        dtype = torch.float32
-
-        weights = causal_projection._build_chunk_decay_weights(
-            chunk_start=10,
-            chunk_end=11,  # Single position
-            context_start=5,
-            device=device,
-            dtype=dtype,
-        )  # (1, 6)
-
-        # Position 10 attends to positions 5, 6, 7, 8, 9
-        # Distances: 5, 4, 3, 2, 1
-        # Weights: decay^4, decay^3, decay^2, decay^1, decay^0=1
-        decay = causal_projection.decay_base
-
-        expected_weights = [decay**4, decay**3, decay**2, decay**1, 1.0, 0.0]
-        for j, expected in enumerate(expected_weights):
-            assert abs(weights[0, j].item() - expected) < 1e-6, \
-                f"Weight at j={j}: expected {expected}, got {weights[0, j].item()}"
 
 
 class TestMemoryWiring:
     """Tests for memory wiring in AtlasMAGBlock.
 
-    Verifies that CausalQKMemoryProjection is properly connected to
-    AtlasMemoryPoly for associative retrieval.
+    Verifies that AtlasMemoryPoly is directly wired to the block
+    without CausalQKMemoryProjection intermediary.
     """
 
-    def test_block_has_qk_memory(self):
-        """AtlasMAGBlock should have qk_memory when memory is enabled."""
-        from src.model.skeleton import AtlasMAGBlock
-        from src.model.persistent_memory import PersistentMemory
-        from src.model.qk_projection import CausalQKMemoryProjection
-
-        dim = 128
-        n_heads = 4
-        pm = PersistentMemory(dim=dim, n_persistent=16)
-
-        block = AtlasMAGBlock(
-            dim=dim,
-            n_heads=n_heads,
-            disable_memory=False,
-            persistent_memory=pm,
-        )
-
-        assert block.qk_memory is not None, "qk_memory should be initialized"
-        assert isinstance(block.qk_memory, CausalQKMemoryProjection)
-
-    def test_block_qk_memory_disabled_when_no_memory(self):
-        """AtlasMAGBlock should not have qk_memory when memory is disabled."""
+    def test_block_has_no_qk_memory(self):
+        """AtlasMAGBlock should NOT have qk_memory attribute."""
         from src.model.skeleton import AtlasMAGBlock
 
         block = AtlasMAGBlock(
             dim=128,
             n_heads=4,
-            disable_memory=True,
+            disable_memory=False,
         )
 
-        assert block.qk_memory is None, "qk_memory should be None when memory disabled"
+        assert not hasattr(block, 'qk_memory') or block.qk_memory is None
 
-    def test_memory_output_uses_qk_projection(self):
-        """Memory output should be different from position-wise processing."""
+    def test_block_has_memory_module(self):
+        """AtlasMAGBlock should have memory module when enabled."""
         from src.model.skeleton import AtlasMAGBlock
-        from src.model.persistent_memory import PersistentMemory
+
+        block = AtlasMAGBlock(
+            dim=128,
+            n_heads=4,
+            disable_memory=False,
+        )
+
+        assert block.memory is not None
+
+    def test_memory_output_contributes(self):
+        """Memory should contribute to output."""
+        from src.model.skeleton import AtlasMAGBlock
 
         torch.manual_seed(42)
 
         dim = 128
         n_heads = 4
-        pm = PersistentMemory(dim=dim, n_persistent=16)
 
         block = AtlasMAGBlock(
             dim=dim,
             n_heads=n_heads,
             disable_memory=False,
-            persistent_memory=pm,
-            ttl_enabled=False,  # Disable TTL to isolate memory wiring
+            ttl_enabled=False,
         )
 
-        # Create input where different positions have different content
         batch = 2
         seq_len = 64
         x = torch.randn(batch, seq_len, dim)
@@ -1129,8 +767,53 @@ class TestMemoryWiring:
         diff = (out_with_memory - out_no_memory).abs().mean()
         assert diff > 1e-6, f"Memory should contribute to output, diff={diff}"
 
-    def test_full_model_has_wired_memory(self):
-        """Full AtlasMAGSkeleton should have wired memory in all blocks."""
+    def test_low_rank_poly_compress(self):
+        """Low-rank compression should reduce MLP input dim from poly_dim to poly_rank."""
+        from src.model.atlas_memory import AtlasMemoryPoly
+
+        mem = AtlasMemoryPoly(dim=128, key_dim=64, poly_degree=2, poly_rank=128)
+
+        # poly_dim for key_dim=64, degree=2 is 64 + 64*65/2 = 2144
+        assert mem.poly_dim == 2144
+        assert mem.poly_compress is not None
+        assert mem.poly_compress.weight.shape == (128, 2144)
+        # w2/w3 should use compressed dim
+        assert mem.w2.weight.shape[1] == 128
+
+        # Forward pass should work
+        x = torch.randn(1, 8, 128)
+        out = mem(x, return_contribution=True)
+        assert out.shape == (1, 8, 128)
+
+    def test_no_compression_when_rank_zero(self):
+        """poly_rank=0 should disable compression."""
+        from src.model.atlas_memory import AtlasMemoryPoly
+
+        mem = AtlasMemoryPoly(dim=128, key_dim=64, poly_degree=2, poly_rank=0)
+        assert mem.poly_compress is None
+        # w2 input should be full poly_dim
+        assert mem.w2.weight.shape[1] == mem.poly_dim
+
+    def test_freeze_unfreeze_static_weights(self):
+        """freeze/unfreeze should toggle requires_grad on all params."""
+        from src.model.atlas_memory import AtlasMemoryPoly
+
+        mem = AtlasMemoryPoly(dim=64, key_dim=32, poly_degree=2, poly_rank=64)
+
+        # All params should start as requires_grad=True
+        for p in mem.parameters():
+            assert p.requires_grad is True
+
+        mem.freeze_static_weights()
+        for p in mem.parameters():
+            assert p.requires_grad is False
+
+        mem.unfreeze_static_weights()
+        for p in mem.parameters():
+            assert p.requires_grad is True
+
+    def test_full_model_has_memory(self):
+        """Full AtlasMAGSkeleton should have memory in all blocks."""
         from src.model.skeleton import AtlasMAGSkeleton
 
         model = AtlasMAGSkeleton(
@@ -1138,10 +821,9 @@ class TestMemoryWiring:
             dim=128,
             n_layers=2,
             n_heads=4,
-            n_persistent=16,
             disable_memory=False,
         )
 
         for i, block in enumerate(model.blocks):
-            assert block.qk_memory is not None, f"Block {i} should have qk_memory"
+            assert block.memory is not None, f"Block {i} should have memory"
             assert block.gamma_gate is not None, f"Block {i} should have gamma_gate"

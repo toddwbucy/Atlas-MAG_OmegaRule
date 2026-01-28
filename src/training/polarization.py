@@ -19,10 +19,10 @@ Reference: PRD Section "Gate Polarization"
 import torch
 from torch import Tensor
 
-from src.config import LAMBDA_INITIAL, LAMBDA_FINAL, POLARIZATION_ANNEAL_RATIO
+from src.config import LAMBDA_INITIAL, LAMBDA_FINAL, POLARIZATION_ANNEAL_RATIO, POLARIZATION_WARMUP_STEPS
 
 
-def get_lambda_polar(step: int, total_steps: int) -> float:
+def get_lambda_polar(step: int, total_steps: int, warmup_steps: int = 0) -> float:
     """
     Compute annealing schedule for polarization penalty.
 
@@ -51,18 +51,23 @@ def get_lambda_polar(step: int, total_steps: int) -> float:
     if total_steps <= 0:
         return LAMBDA_INITIAL
 
-    warmup_steps = int(POLARIZATION_ANNEAL_RATIO * total_steps)
+    # Polarization warmup: return 0 during initial warmup period
+    # This gives attention a head start before polarization pressure kicks in
+    if warmup_steps > 0 and step < warmup_steps:
+        return 0.0
 
-    if step < warmup_steps:
+    anneal_warmup = int(POLARIZATION_ANNEAL_RATIO * total_steps)
+
+    if step < anneal_warmup:
         # During warmup: constant high λ
         return LAMBDA_INITIAL
     else:
         # After warmup: exponential decay from LAMBDA_INITIAL to LAMBDA_FINAL
-        remaining_steps = total_steps - warmup_steps
+        remaining_steps = total_steps - anneal_warmup
         if remaining_steps <= 0:
             return LAMBDA_FINAL
 
-        progress = (step - warmup_steps) / remaining_steps
+        progress = (step - anneal_warmup) / remaining_steps
         # Clamp progress to [0, 1]
         progress = max(0.0, min(1.0, progress))
 
@@ -76,6 +81,7 @@ def gate_polarization_loss(
     gate_values: Tensor,
     step: int,
     total_steps: int,
+    warmup_steps: int = 0,
 ) -> Tensor:
     """
     Compute gate polarization loss.
@@ -110,7 +116,7 @@ def gate_polarization_loss(
         >>> loss.item()  # Zero penalty
         0.0
     """
-    lambda_polar = get_lambda_polar(step, total_steps)
+    lambda_polar = get_lambda_polar(step, total_steps, warmup_steps=warmup_steps)
 
     # Compute polarization: how far from decisive (0 or 1)?
     # |2g - 1| = 1 when g∈{0,1}, = 0 when g=0.5

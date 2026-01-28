@@ -25,12 +25,13 @@ from src.training.gate_monitor import (
     GateMonitor,
 )
 from src.training.trainer import Phase1Trainer, verify_multiplicative_fusion
-from src.training.niah_probe import NIAHProbe, NIAHResult, measure_niah_overhead
+from src.training.niah_probe import NIAHProbe, NIAHResult
 from src.training.telemetry import TelemetryLogger, PPLDeltaTracker, StepMetrics
 from src.training.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
 from src.training.phase2_trainer import Phase2Trainer, Phase2StepResult, run_phase2_validation
 from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
 from src.training.ttl_update import ttl_step, ttl_step_with_grad_clip, TTLUpdater
+from src.training.validation import run_validation
 
 __all__ = [
     # Polarization
@@ -46,7 +47,6 @@ __all__ = [
     # Phase 2: NIAH Probes
     "NIAHProbe",
     "NIAHResult",
-    "measure_niah_overhead",
     # Phase 2: Telemetry
     "TelemetryLogger",
     "PPLDeltaTracker",
@@ -65,4 +65,6 @@ __all__ = [
     "ttl_step",
     "ttl_step_with_grad_clip",
     "TTLUpdater",
+    # Validation
+    "run_validation",
 ]
