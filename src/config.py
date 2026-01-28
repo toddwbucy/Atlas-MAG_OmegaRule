@@ -29,9 +29,12 @@ HEAD_DIM: int = D // N_HEADS      # Per-head dimension (64)
 # Memory configuration
 N_PERSISTENT: int = 64            # Number of persistent memory tokens
 L_M: int = 2                      # Memory depth (Phase 1 decision: start with 2)
-POLY_DEGREE: int = 2              # Polynomial feature degree (φ_2 for quadratic capacity)
+POLY_DEGREE: int = 2              # Polynomial feature degree (1 for linear, 2 for quadratic capacity)
 MEMORY_EXPANSION: int = 4         # SwiGLU expansion factor
 USE_POLY_MEMORY: bool = True      # Use polynomial features for memory (ESSENTIAL per paper)
+POLY_RANK: int = 512              # Low-rank compression dim for poly features (0=no compression)
+MEMORY_DROPOUT_RATE: float = 0.20 # Fraction of training steps with memory killed
+FROZEN_M0_RATIO: float = 0.0     # Fraction of steps with static memory frozen (0=disabled)
 
 # Sliding window attention
 WINDOW_SIZE: int = 512            # Local attention window
@@ -57,7 +60,7 @@ GAMMA_GATE_HIDDEN_DIM: int = 64   # Hidden dim for γ gate MLP
 # =============================================================================
 
 # Newton-Schulz iterations (unified across all uses)
-K: int = 5                        # Newton-Schulz iterations for Muon optimizer
+K: int = 10                       # Newton-Schulz iterations for Muon optimizer
 
 
 # =============================================================================
@@ -77,7 +80,10 @@ TTL_ALPHA: float = 0.999          # Close to 1 = minimal decay
 TTL_ETA: float = 0.01
 
 # Newton-Schulz iterations for momentum orthogonalization
-TTL_NS_ITERATIONS: int = 5        # Same as K (per paper)
+TTL_NS_ITERATIONS: int = 10       # Increased from 5 for better orthogonalization convergence
+
+# Adaptive eta: scale learning rate by inverse gradient norm
+TTL_ADAPTIVE_ETA: bool = True
 
 # When to reset momentum buffers
 # Options: "sequence" (conservative), "batch", "never" (most aggressive)
@@ -88,9 +94,10 @@ TTL_RESET_MODE: str = "sequence"
 # Gate Polarization Constants (PRD Section: Gate Polarization)
 # =============================================================================
 
-LAMBDA_INITIAL: float = 10.0      # First 10% of training
-LAMBDA_FINAL: float = 0.1         # After annealing
+LAMBDA_INITIAL: float = 1.0       # First 10% of training (reduced from 10.0 per committee feedback)
+LAMBDA_FINAL: float = 0.01        # After annealing (reduced from 0.1)
 POLARIZATION_ANNEAL_RATIO: float = 0.1  # When to switch from initial to final
+POLARIZATION_WARMUP_STEPS: int = 2000   # Steps before polarization activates (attention head start)
 
 
 # =============================================================================

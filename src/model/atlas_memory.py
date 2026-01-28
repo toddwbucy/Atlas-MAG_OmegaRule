@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from typing import cast
-from src.config import MEMORY_EXPANSION, POLY_DEGREE
+from src.config import MEMORY_EXPANSION, POLY_DEGREE, POLY_RANK
 
 
 class AtlasMemory(nn.Module):
@@ -143,6 +143,7 @@ class AtlasMemoryPoly(nn.Module):
         key_dim: int = 64,  # Same as head_dim for capacity theorem
         expansion: int = MEMORY_EXPANSION,
         poly_degree: int = POLY_DEGREE,
+        poly_rank: int = POLY_RANK,
         bias: bool = False,
     ):
         """
@@ -160,12 +161,19 @@ class AtlasMemoryPoly(nn.Module):
         self.key_dim = key_dim
         self.poly_degree = poly_degree
 
-        if poly_degree != 2:
-            raise NotImplementedError("Only polynomial degree 2 is implemented")
+        if poly_degree not in (1, 2):
+            raise NotImplementedError(f"Polynomial degree {poly_degree} not implemented (use 1 or 2)")
 
-        # Compute expanded dimension: key_dim + key_dim*(key_dim+1)/2
-        # For key_dim=64: 64 + 2080 = 2144
-        self.poly_dim = key_dim + (key_dim * (key_dim + 1)) // 2
+        # Compute expanded dimension based on polynomial degree
+        if poly_degree == 1:
+            # Degree 1: identity features only (no polynomial expansion)
+            # poly_dim = key_dim (e.g., 64 for key_dim=64)
+            self.poly_dim = key_dim
+        else:
+            # Degree 2: key_dim + key_dim*(key_dim+1)/2
+            # For key_dim=64: 64 + 2080 = 2144
+            self.poly_dim = key_dim + (key_dim * (key_dim + 1)) // 2
+        self.poly_rank = poly_rank
         self.hidden_dim = key_dim * expansion  # Scale hidden with key_dim, not full dim
 
         # Project dim → key_dim for polynomial features
@@ -174,20 +182,29 @@ class AtlasMemoryPoly(nn.Module):
         # Normalize polynomial features to maintain signal magnitude
         self.poly_norm = nn.LayerNorm(self.poly_dim)
 
-        # Gated MLP operates on poly_dim
+        # Optional low-rank compression of polynomial features
+        # Reduces w2/w3 input from poly_dim (e.g. 2144) to poly_rank (e.g. 512)
+        self.poly_compress: nn.Linear | None = None
+        mlp_input_dim = self.poly_dim
+        if poly_rank > 0 and poly_rank < self.poly_dim:
+            self.poly_compress = nn.Linear(self.poly_dim, poly_rank, bias=bias)
+            mlp_input_dim = poly_rank
+
+        # Gated MLP operates on (compressed) poly features
         self.w1 = nn.Linear(self.hidden_dim, key_dim, bias=bias)  # Output key_dim
-        self.w2 = nn.Linear(self.poly_dim, self.hidden_dim, bias=bias)
-        self.w3 = nn.Linear(self.poly_dim, self.hidden_dim, bias=bias)
+        self.w2 = nn.Linear(mlp_input_dim, self.hidden_dim, bias=bias)
+        self.w3 = nn.Linear(mlp_input_dim, self.hidden_dim, bias=bias)
 
         # Project key_dim → dim for output
         self.proj_up = nn.Linear(key_dim, dim, bias=bias)
 
-        # Precompute indices for upper triangular (including diagonal)
-        self.register_buffer(
-            "triu_indices",
-            torch.triu_indices(key_dim, key_dim),
-            persistent=False,
-        )
+        # Precompute indices for upper triangular (only needed for degree 2)
+        if poly_degree == 2:
+            self.register_buffer(
+                "triu_indices",
+                torch.triu_indices(key_dim, key_dim),
+                persistent=False,
+            )
 
         self._init_weights()
         self._init_momentum_buffers()
@@ -249,10 +266,15 @@ class AtlasMemoryPoly(nn.Module):
         # Standard init for projection layers
         nn.init.normal_(self.proj_down.weight, std=0.02)
         nn.init.normal_(self.proj_up.weight, std=0.02)
+        if self.poly_compress is not None:
+            nn.init.normal_(self.poly_compress.weight, std=0.02)
 
     def _polynomial_features(self, x: Tensor) -> Tensor:
         """
-        Compute degree-2 polynomial features.
+        Compute polynomial features of the specified degree.
+
+        Degree 1: Identity (returns x unchanged)
+        Degree 2: Concatenates x with upper-triangular outer products [x, x_i*x_j]
 
         Args:
             x: Input of shape (batch, seq_len, key_dim)
@@ -260,12 +282,13 @@ class AtlasMemoryPoly(nn.Module):
         Returns:
             Expanded tensor of shape (batch, seq_len, poly_dim)
         """
-        # Compute outer product: x_i * x_j
-        # Shape: (batch, seq_len, key_dim, key_dim)
+        if self.poly_degree == 1:
+            return x
+
+        # Degree 2: compute outer product x_i * x_j
         outer = x.unsqueeze(-1) * x.unsqueeze(-2)
 
         # Extract upper triangular (including diagonal)
-        # Shape: (batch, seq_len, key_dim*(key_dim+1)/2)
         triu_idx = cast(Tensor, self.triu_indices)
         triu = outer[..., triu_idx[0], triu_idx[1]]
 
@@ -294,9 +317,14 @@ class AtlasMemoryPoly(nn.Module):
         x_poly = self._polynomial_features(x_key)  # (batch, seq_len, poly_dim)
         x_poly = self.poly_norm(x_poly)
 
-        # Gate and value use normalized polynomial features
-        gate = F.silu(self.w2(x_poly))
-        value = self.w3(x_poly)
+        # Optional low-rank compression before MLP
+        x_mlp_in = x_poly
+        if self.poly_compress is not None:
+            x_mlp_in = self.poly_compress(x_poly)
+
+        # Gate and value use (compressed) polynomial features
+        gate = F.silu(self.w2(x_mlp_in))
+        value = self.w3(x_mlp_in)
         gated = gate * value
 
         # Memory output in key dimension
@@ -312,9 +340,24 @@ class AtlasMemoryPoly(nn.Module):
         out: Tensor = x + contribution
         return out
 
+    def freeze_static_weights(self) -> None:
+        """Freeze all non-TTL (static) parameters so only TTL (ΔM) can reduce loss.
+
+        This forces the inner loop (TTL) to carry the load, preventing the model
+        from relying solely on static weight optimization.
+        """
+        for param in self.parameters():
+            param.requires_grad_(False)
+
+    def unfreeze_static_weights(self) -> None:
+        """Unfreeze all parameters to resume normal training."""
+        for param in self.parameters():
+            param.requires_grad_(True)
+
     def extra_repr(self) -> str:
         """Return a string with extra module information for repr()."""
+        rank_str = f", poly_rank={self.poly_rank}" if self.poly_rank > 0 else ""
         return (
             f"dim={self.dim}, key_dim={self.key_dim}, poly_dim={self.poly_dim}, "
-            f"hidden_dim={self.hidden_dim}, poly_degree={self.poly_degree}"
+            f"hidden_dim={self.hidden_dim}, poly_degree={self.poly_degree}{rank_str}"
         )

@@ -11,7 +11,7 @@ Loss function:
 Properties:
     - Maximum penalty (λ) at g=0.5 (indecisive)
     - Zero penalty at g∈{0,1} (decisive)
-    - λ starts high (10.0) to force polarization, then decays to 0.1
+    - λ starts high to force polarization, then decays
 
 Reference: PRD Section "Gate Polarization"
 """
@@ -19,16 +19,17 @@ Reference: PRD Section "Gate Polarization"
 import torch
 from torch import Tensor
 
-from src.config import LAMBDA_INITIAL, LAMBDA_FINAL, POLARIZATION_ANNEAL_RATIO
+from src.config import LAMBDA_INITIAL, LAMBDA_FINAL, POLARIZATION_ANNEAL_RATIO, POLARIZATION_WARMUP_STEPS
 
 
-def get_lambda_polar(step: int, total_steps: int) -> float:
+def get_lambda_polar(step: int, total_steps: int, warmup_steps: int = 0) -> float:
     """
     Compute annealing schedule for polarization penalty.
 
     Schedule:
-        - First 10% of training: HIGH λ = 10.0 (winner-take-all pressure)
-        - Remaining 90%: Exponential decay λ → 0.1 (allow subtle mixing)
+        - Optional warmup: λ = 0.0 for warmup_steps (attention head start)
+        - First 10% of training (post-warmup): λ = LAMBDA_INITIAL
+        - Remaining 90%: Exponential decay λ → LAMBDA_FINAL
 
     The high initial λ forces gates to pick a side early. The decay allows
     nuanced mixing once the architecture has proven it can route.
@@ -36,33 +37,39 @@ def get_lambda_polar(step: int, total_steps: int) -> float:
     Args:
         step: Current training step (0-indexed)
         total_steps: Total number of training steps
+        warmup_steps: Steps with λ = 0.0 before polarization activates
 
     Returns:
         Lambda value for polarization loss at this step
 
     Example:
-        >>> get_lambda_polar(0, 10000)     # Start of training
-        10.0
-        >>> get_lambda_polar(500, 10000)   # Still in warmup (5% < 10%)
-        10.0
-        >>> get_lambda_polar(10000, 10000) # End of training
-        0.1
+        >>> get_lambda_polar(0, 10000)             # Start of training
+        1.0
+        >>> get_lambda_polar(0, 10000, warmup_steps=500)  # In warmup
+        0.0
+        >>> get_lambda_polar(10000, 10000)          # End of training
+        0.01
     """
     if total_steps <= 0:
         return LAMBDA_INITIAL
 
-    warmup_steps = int(POLARIZATION_ANNEAL_RATIO * total_steps)
+    # Polarization warmup: return 0 during initial warmup period
+    # This gives attention a head start before polarization pressure kicks in
+    if warmup_steps > 0 and step < warmup_steps:
+        return 0.0
 
-    if step < warmup_steps:
+    anneal_warmup = int(POLARIZATION_ANNEAL_RATIO * total_steps)
+
+    if step < anneal_warmup:
         # During warmup: constant high λ
         return LAMBDA_INITIAL
     else:
         # After warmup: exponential decay from LAMBDA_INITIAL to LAMBDA_FINAL
-        remaining_steps = total_steps - warmup_steps
+        remaining_steps = total_steps - anneal_warmup
         if remaining_steps <= 0:
             return LAMBDA_FINAL
 
-        progress = (step - warmup_steps) / remaining_steps
+        progress = (step - anneal_warmup) / remaining_steps
         # Clamp progress to [0, 1]
         progress = max(0.0, min(1.0, progress))
 
@@ -76,6 +83,7 @@ def gate_polarization_loss(
     gate_values: Tensor,
     step: int,
     total_steps: int,
+    warmup_steps: int = 0,
 ) -> Tensor:
     """
     Compute gate polarization loss.
@@ -102,15 +110,15 @@ def gate_polarization_loss(
     Example:
         >>> gates = torch.tensor([0.5, 0.5, 0.5])  # All indecisive
         >>> loss = gate_polarization_loss(gates, step=0, total_steps=1000)
-        >>> loss.item()  # High penalty (λ=10.0)
-        10.0
+        >>> loss.item()  # High penalty (λ=LAMBDA_INITIAL)
+        1.0
 
         >>> gates = torch.tensor([0.0, 1.0, 0.0])  # All decisive
         >>> loss = gate_polarization_loss(gates, step=0, total_steps=1000)
         >>> loss.item()  # Zero penalty
         0.0
     """
-    lambda_polar = get_lambda_polar(step, total_steps)
+    lambda_polar = get_lambda_polar(step, total_steps, warmup_steps=warmup_steps)
 
     # Compute polarization: how far from decisive (0 or 1)?
     # |2g - 1| = 1 when g∈{0,1}, = 0 when g=0.5

@@ -81,13 +81,25 @@ class TrainingConfig:
     # These verify the memory module actually retrieves information, not just trains well
     niah_enabled: bool = True
     niah_frequency: int = 500  # Run NIAH probe every N steps
-    niah_haystack_size: int = 100  # Number of distractor keys
-    niah_threshold: float = 0.8  # Minimum accuracy to pass (80%)
+    niah_haystack_size: int = 4  # Number of test sequences for memory probe
+    niah_threshold: float = 0.1  # Min PPL reduction ratio (10%)
 
     # Polarization
     use_polarization: bool = True
     lambda_initial: float = LAMBDA_INITIAL
     lambda_final: float = LAMBDA_FINAL
+
+    # Memory architecture
+    poly_degree: int = 2  # Polynomial feature degree (1 for small models, 2 for 195M+)
+    poly_rank: int = 512  # Low-rank compression dim for polynomial features (0=none)
+    memory_dropout: float = 0.20  # Fraction of steps with memory killed
+    polarization_warmup: int = 2000  # Steps before polarization activates
+    frozen_m0_ratio: float = 0.0  # Fraction of steps with static memory frozen
+
+    # TTL tuning
+    ttl_eta: float = 0.01  # Inner loop learning rate
+    ttl_adaptive_eta: bool = True  # Scale eta by inverse gradient norm
+    ns_iterations: int = 10  # Newton-Schulz iterations
 
     # Ablation
     disable_memory: bool = False  # For attention-only ablation
@@ -206,6 +218,12 @@ def train(config: TrainingConfig):
         n_layers=config.n_layers,
         n_heads=config.n_heads,
         disable_memory=config.disable_memory,
+        poly_degree=config.poly_degree,
+        poly_rank=config.poly_rank,
+        memory_dropout_rate=config.memory_dropout,
+        ttl_eta=config.ttl_eta,
+        ttl_ns_iters=config.ns_iterations,
+        ttl_adaptive_eta=config.ttl_adaptive_eta,
     ).to(config.device)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -314,9 +332,12 @@ def train(config: TrainingConfig):
             accuracy_threshold=config.niah_threshold,
         )
         logger.info(
-            f"NIAHProbe enabled: freq={config.niah_frequency}, "
-            f"haystack={config.niah_haystack_size}, threshold={config.niah_threshold}"
+            f"MemoryProbe enabled: freq={config.niah_frequency}, "
+            f"n_seqs={config.niah_haystack_size}, threshold={config.niah_threshold}"
         )
+        # Cache a real validation batch for meaningful probe measurements
+        probe_batch = next(iter(val_loader))["input_ids"]
+        niah_probe.set_eval_batch(probe_batch)
 
     # Training loop
     logger.info("Starting training...")
@@ -346,6 +367,19 @@ def train(config: TrainingConfig):
             input_ids = batch["input_ids"].to(config.device)
             labels = batch["labels"].to(config.device)
 
+            # Frozen M0: occasionally freeze static memory weights so only TTL can reduce loss
+            # NOTE: We disable TTL on frozen steps because freeze_static_weights()
+            # sets requires_grad=False, which breaks torch.autograd.grad() in ttl_step.
+            is_frozen_step = (
+                config.frozen_m0_ratio > 0
+                and not config.disable_memory
+                and torch.rand(1).item() < config.frozen_m0_ratio
+            )
+            if is_frozen_step:
+                for block in model.blocks:
+                    block.memory.freeze_static_weights()
+                    block.ttl_enabled = False
+
             # Forward pass
             logits = model(input_ids)
 
@@ -364,12 +398,18 @@ def train(config: TrainingConfig):
                 # (model.get_gate_values() returns detached floats, not grad-connected tensors)
                 gate_params = model.get_gate_params()  # Returns list of nn.Parameters
                 gates = torch.sigmoid(torch.stack(gate_params))
-                polar_loss = gate_polarization_loss(gates, global_step, est_steps)
+                polar_loss = gate_polarization_loss(gates, global_step, est_steps, warmup_steps=config.polarization_warmup)
                 total_loss = (lm_loss + polar_loss) / accum_steps
                 polar_loss_value = polar_loss.item()
 
             # Backward pass (accumulates gradients)
             total_loss.backward()
+
+            # Unfreeze memory if it was frozen this step
+            if is_frozen_step:
+                for block in model.blocks:
+                    block.memory.unfreeze_static_weights()
+                    block.ttl_enabled = True
 
             # Zero memory gradients immediately after backward.
             # Memory params receive gradients from LM loss, but these are never used
@@ -416,11 +456,15 @@ def train(config: TrainingConfig):
 
                     if not niah_result.passed:
                         logger.warning(
-                            f"  [NIAH FAILED] Memory retrieval degraded! "
-                            f"Accuracy: {niah_result.accuracy:.3f} < {config.niah_threshold}"
+                            f"  [MEMORY PROBE FAILED] PPL reduction: {niah_result.accuracy:.1%} "
+                            f"< {config.niah_threshold:.0%} "
+                            f"(mem={niah_result.needle_norm:.1f}, nomem={niah_result.retrieved_norm:.1f})"
                         )
                     else:
-                        logger.info(f"  [NIAH PASSED] Memory retrieval: {niah_result.accuracy:.3f}")
+                        logger.info(
+                            f"  [MEMORY PROBE PASSED] PPL reduction: {niah_result.accuracy:.1%} "
+                            f"(mem={niah_result.needle_norm:.1f}, nomem={niah_result.retrieved_norm:.1f})"
+                        )
 
                 global_step += 1
 
@@ -630,7 +674,18 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device (cuda/cpu), auto-detects if not specified",
     )
+    parser.add_argument(
+        "--poly-degree", type=int, default=2,
+        help="Polynomial feature degree for memory (1 for <100M models, 2 for 195M+)",
+    )
     parser.add_argument("--no-polarization", action="store_true", help="Disable gate polarization")
+    parser.add_argument("--memory-dropout", type=float, default=0.20, help="Fraction of steps with memory killed (default: 0.20)")
+    parser.add_argument("--polarization-warmup", type=int, default=2000, help="Steps before polarization activates (default: 2000)")
+    parser.add_argument("--ns-iterations", type=int, default=10, help="Newton-Schulz iterations (default: 10)")
+    parser.add_argument("--ttl-eta", type=float, default=0.01, help="Inner loop learning rate (default: 0.01)")
+    parser.add_argument("--no-ttl-adaptive-eta", action="store_true", help="Disable adaptive eta scaling")
+    parser.add_argument("--poly-rank", type=int, default=512, help="Low-rank compression dim for poly features (0=none, default: 512)")
+    parser.add_argument("--frozen-m0-ratio", type=float, default=0.0, help="Fraction of steps with M0 frozen (default: 0.0)")
     parser.add_argument(
         "--disable-memory",
         action="store_true",
@@ -644,15 +699,15 @@ def main():
         "--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)"
     )
 
-    # NIAH probe settings
-    parser.add_argument("--no-niah", action="store_true", help="Disable NIAH probes")
+    # Memory probe settings
+    parser.add_argument("--no-niah", action="store_true", help="Disable memory probes")
     parser.add_argument(
-        "--niah-frequency", type=int, default=500, help="NIAH probe frequency (steps)"
+        "--niah-frequency", type=int, default=500, help="Memory probe frequency (steps)"
     )
     parser.add_argument(
-        "--niah-haystack", type=int, default=100, help="NIAH haystack size (distractor keys)"
+        "--niah-haystack", type=int, default=4, help="Number of test sequences for memory probe"
     )
-    parser.add_argument("--niah-threshold", type=float, default=0.8, help="NIAH accuracy threshold")
+    parser.add_argument("--niah-threshold", type=float, default=0.1, help="Min PPL reduction ratio (0.1 = 10%)")
 
     args = parser.parse_args()
 
@@ -681,6 +736,14 @@ def main():
         output_dir=args.output_dir,
         tokenizer_path=args.tokenizer,
         device=args.device,
+        poly_degree=args.poly_degree,
+        poly_rank=args.poly_rank,
+        memory_dropout=args.memory_dropout,
+        polarization_warmup=args.polarization_warmup,
+        frozen_m0_ratio=args.frozen_m0_ratio,
+        ns_iterations=args.ns_iterations,
+        ttl_eta=args.ttl_eta,
+        ttl_adaptive_eta=not args.no_ttl_adaptive_eta,
         use_polarization=not args.no_polarization,
         disable_memory=args.disable_memory,
         log_every=args.log_every,

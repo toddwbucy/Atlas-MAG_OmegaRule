@@ -34,6 +34,7 @@ def ttl_step(
     alpha: float = 0.999,
     eta: float = 0.01,
     ns_iterations: int = 5,
+    adaptive_eta: bool = False,
 ) -> dict[str, float]:
     """
     Perform one TTL update step on memory parameters.
@@ -51,6 +52,7 @@ def ttl_step(
         alpha: Weight decay factor (default: 0.999, close to 1 = minimal decay)
         eta: Learning rate for memory updates (default: 0.01)
         ns_iterations: Newton-Schulz iterations (default: 5, per paper)
+        adaptive_eta: If True, scale eta by 1/(1 + grad_norm) to stabilize large-gradient steps
 
     Returns:
         Dictionary of statistics for logging:
@@ -76,6 +78,15 @@ def ttl_step(
 
     stats: dict[str, float] = {}
 
+    # Compute effective eta (adaptive scaling by inverse gradient norm)
+    if adaptive_eta:
+        total_grad_norm = torch.sqrt(sum(g.norm() ** 2 for g in grads))
+        effective_eta = eta / (1.0 + total_grad_norm.item())
+        stats["effective_eta"] = effective_eta
+        stats["total_grad_norm"] = total_grad_norm.item()
+    else:
+        effective_eta = eta
+
     # Update each parameter
     for (name, param), grad in zip(param_list, grads):
         # Get momentum buffer
@@ -94,7 +105,7 @@ def ttl_step(
 
         # Update parameter: M_t = alpha * M_{t-1} - eta * update
         # Using in-place operations on param.data to avoid autograd issues
-        param.data.mul_(alpha).sub_(update, alpha=eta)
+        param.data.mul_(alpha).sub_(update, alpha=effective_eta)
 
         # Record statistics
         stats[f"{name}_grad_norm"] = grad.norm().item()
@@ -193,12 +204,14 @@ class TTLUpdater:
         eta: float = 0.01,
         ns_iterations: int = 5,
         reset_mode: str = "sequence",
+        adaptive_eta: bool = False,
     ):
         self.theta = theta
         self.alpha = alpha
         self.eta = eta
         self.ns_iterations = ns_iterations
         self.reset_mode = reset_mode
+        self.adaptive_eta = adaptive_eta
 
         self._step_count = 0
         self._sequence_count = 0
@@ -225,6 +238,7 @@ class TTLUpdater:
             alpha=self.alpha,
             eta=self.eta,
             ns_iterations=self.ns_iterations,
+            adaptive_eta=self.adaptive_eta,
         )
 
         self._step_count += 1
