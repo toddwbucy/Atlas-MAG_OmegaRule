@@ -23,6 +23,7 @@ Reference: PRD Section 5.4 REQ-P2-002
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, List
@@ -192,10 +193,11 @@ class NIAHProbe:
                     block.disable_memory = flag
 
         # PPL reduction ratio: how much does memory help?
-        if ppl_nomem > 0:
-            accuracy = (ppl_nomem - ppl_mem) / ppl_nomem
-        else:
+        # Guard against inf/NaN when both PPLs overflow (e.g., untrained model)
+        if math.isinf(ppl_nomem) or math.isinf(ppl_mem) or ppl_nomem <= 0:
             accuracy = 0.0
+        else:
+            accuracy = (ppl_nomem - ppl_mem) / ppl_nomem
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         passed = accuracy >= self.accuracy_threshold
