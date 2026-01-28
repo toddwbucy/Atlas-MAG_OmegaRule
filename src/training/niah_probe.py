@@ -176,19 +176,20 @@ class NIAHProbe:
 
             # Disable memory across all blocks (save/restore original flags)
             orig_flags = [block.disable_memory for block in model.blocks]
-            for block in model.blocks:
-                block.disable_memory = True
+            try:
+                for block in model.blocks:
+                    block.disable_memory = True
 
-            logits_nomem = model(input_ids)
-            logits_nomem = logits_nomem[:, :-1, :].contiguous()
-            loss_nomem = F.cross_entropy(
-                logits_nomem.view(-1, vocab_size), labels.view(-1)
-            )
-            ppl_nomem = torch.exp(loss_nomem).item()
-
-            # Restore original per-block memory flags
-            for block, flag in zip(model.blocks, orig_flags):
-                block.disable_memory = flag
+                logits_nomem = model(input_ids)
+                logits_nomem = logits_nomem[:, :-1, :].contiguous()
+                loss_nomem = F.cross_entropy(
+                    logits_nomem.view(-1, vocab_size), labels.view(-1)
+                )
+                ppl_nomem = torch.exp(loss_nomem).item()
+            finally:
+                # Restore original per-block memory flags even on error
+                for block, flag in zip(model.blocks, orig_flags):
+                    block.disable_memory = flag
 
         # PPL reduction ratio: how much does memory help?
         if ppl_nomem > 0:
