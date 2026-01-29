@@ -173,6 +173,7 @@ def run_worker_loop(args):
                             probe_frequency=1,
                             haystack_size=4,
                             accuracy_threshold=0.1,
+                            seq_len=1024,  # Must be > WINDOW_SIZE (512) to test beyond-window retrieval
                         )
                         niah.set_eval_batch(probe_batch)
                         niah_result = niah.run_probe(model, step or 0, args.device)
