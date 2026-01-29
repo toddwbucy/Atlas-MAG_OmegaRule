@@ -227,21 +227,22 @@ class TestAtlasMAGBlock:
     def test_gate_value(self):
         """Gate should be accessible with per-layer initialization.
 
-        Attention-favored initialization (0.15-0.40) per committee feedback.
-        Early layers favor attention, later layers more balanced.
+        Symmetric initialization (0.15-0.85) spanning both sides of 0.5.
+        This ensures polarization pushes early layers toward attention (0)
+        and later layers toward memory (1), giving both branches a chance.
         """
-        # Test layer 0: sigmoid(-1.73) ≈ 0.15
+        # Test layer 0: sigmoid(-1.73) ≈ 0.15 (attention-favored)
         block_0 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=0, n_layers=12)
         gate_0 = block_0.get_gate_value()
         assert 0 <= gate_0 <= 1
         # Layer 0 should start at ~15% memory (attention-favored)
         assert 0.13 <= gate_0 <= 0.18
 
-        # Test last layer: sigmoid(-0.41) ≈ 0.40
+        # Test last layer: sigmoid(+1.73) ≈ 0.85 (memory-favored)
         block_11 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=11, n_layers=12)
         gate_11 = block_11.get_gate_value()
-        # Layer 11 should be more balanced: ~40% memory
-        assert 0.38 <= gate_11 <= 0.43
+        # Layer 11 should be memory-favored: ~85% memory
+        assert 0.83 <= gate_11 <= 0.88
 
         # Verify later layers have higher gates (more memory contribution)
         assert gate_11 > gate_0
@@ -369,6 +370,82 @@ class TestMemoryDropout:
         # Outputs should differ because memory runs in eval but not train
         diff = (out_train - out_eval).abs().mean()
         assert diff > 1e-6, "Memory should be active in eval mode despite high dropout rate"
+
+
+class TestSlidingWindowAttention:
+    """Tests for sliding window attention mask (Atlas SWA)."""
+
+    def test_sliding_window_mask_shape(self):
+        """Mask should be (seq_len, seq_len)."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        mask = create_sliding_window_mask(seq_len=16, window_size=4, device=torch.device("cpu"))
+        assert mask.shape == (16, 16)
+        assert mask.dtype == torch.bool
+
+    def test_sliding_window_mask_causal(self):
+        """Upper triangle should always be masked (causal constraint)."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        mask = create_sliding_window_mask(seq_len=8, window_size=8, device=torch.device("cpu"))
+        # With window=seq_len, it's just a causal mask (no sliding window constraint)
+        expected_causal = torch.triu(torch.ones(8, 8, dtype=torch.bool), diagonal=1)
+        assert torch.equal(mask, expected_causal)
+
+    def test_sliding_window_mask_window_constraint(self):
+        """Positions beyond window should be masked."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        mask = create_sliding_window_mask(seq_len=6, window_size=3, device=torch.device("cpu"))
+        # Position 3 should NOT see position 0 (0 < 3 - 3 + 1 = 1)
+        assert mask[3, 0]      # masked
+        assert not mask[3, 1]  # can see
+        assert not mask[3, 2]  # can see
+        assert not mask[3, 3]  # can see (self)
+        # Position 5 should NOT see positions 0, 1, 2
+        assert mask[5, 0]      # masked
+        assert mask[5, 1]      # masked
+        assert mask[5, 2]      # masked
+        assert not mask[5, 3]  # can see
+        assert not mask[5, 4]  # can see
+        assert not mask[5, 5]  # can see (self)
+
+    def test_sliding_window_mask_early_positions(self):
+        """Early positions should see all available (no sliding yet)."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        mask = create_sliding_window_mask(seq_len=6, window_size=3, device=torch.device("cpu"))
+        # Position 0: only sees self
+        assert not mask[0, 0]  # can see
+        assert mask[0, 1]      # future - masked
+        # Position 2: sees 0, 1, 2 (window not full yet counts from 0)
+        assert not mask[2, 0]  # can see
+        assert not mask[2, 1]  # can see
+        assert not mask[2, 2]  # can see
+
+    def test_sliding_window_mask_invalid_window_size(self):
+        """Invalid window_size should raise ValueError."""
+        from src.model.skeleton import create_sliding_window_mask
+        import pytest
+
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            create_sliding_window_mask(seq_len=6, window_size=0, device=torch.device("cpu"))
+
+    def test_sliding_window_mask_large_window_clamped(self):
+        """Window larger than seq_len should be clamped (acts as full causal)."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        # window_size=100 > seq_len=6, should clamp to 6 (full causal)
+        mask = create_sliding_window_mask(seq_len=6, window_size=100, device=torch.device("cpu"))
+        expected_causal = torch.triu(torch.ones(6, 6, dtype=torch.bool), diagonal=1)
+        assert torch.equal(mask, expected_causal)
+
+    def test_block_uses_sliding_window(self):
+        """AtlasMAGBlock should use sliding window by default."""
+        block = AtlasMAGBlock(dim=128, n_heads=4, ttl_enabled=False)
+        # WINDOW_SIZE from config is 512
+        from src.config import WINDOW_SIZE
+        assert block.attn_window_size == WINDOW_SIZE
 
 
 class TestGPUCompatibility:
