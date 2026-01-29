@@ -471,3 +471,85 @@ class TestGPUCompatibility:
         pm = PersistentMemory(dim=128, n_persistent=16).cuda()
         assert pm.m_persistent.device.type == "cuda"
         assert pm.norm_persistent > 0
+
+
+class TestMemoryContribution:
+    """Tests for functional PPL probes (Committee v6 feedback).
+
+    Committee critique: The NIAH probe was testing the wrong module.
+    These tests verify the compute_memory_contribution function that
+    measures actual memory contribution via PPL comparison.
+    """
+
+    def test_compute_memory_contribution_returns_dict(self):
+        """compute_memory_contribution should return expected keys."""
+        from src.training.validation import compute_memory_contribution
+
+        model = AtlasMAGSkeleton(
+            vocab_size=1000,
+            dim=128,
+            n_layers=2,
+            n_heads=4,
+            ttl_enabled=False,
+        )
+
+        # Create a simple mock loader
+        class MockLoader:
+            def __iter__(self):
+                for _ in range(2):
+                    yield {
+                        "input_ids": torch.randint(0, 1000, (2, 32)),
+                        "labels": torch.randint(0, 1000, (2, 32)),
+                    }
+
+        result = compute_memory_contribution(model, MockLoader(), "cpu", max_batches=2)
+
+        assert "ppl_with_memory" in result
+        assert "ppl_without_memory" in result
+        assert "memory_contribution_pct" in result
+        assert result["ppl_with_memory"] > 0
+        assert result["ppl_without_memory"] > 0
+
+    def test_memory_contribution_formula(self):
+        """Memory contribution should be (ppl_nomem - ppl_mem) / ppl_nomem * 100."""
+        from src.training.validation import compute_memory_contribution
+
+        model = AtlasMAGSkeleton(
+            vocab_size=1000,
+            dim=128,
+            n_layers=2,
+            n_heads=4,
+            ttl_enabled=False,
+        )
+
+        class MockLoader:
+            def __iter__(self):
+                for _ in range(2):
+                    yield {
+                        "input_ids": torch.randint(0, 1000, (2, 32)),
+                        "labels": torch.randint(0, 1000, (2, 32)),
+                    }
+
+        result = compute_memory_contribution(model, MockLoader(), "cpu", max_batches=2)
+
+        # Verify formula: (ppl_nomem - ppl_mem) / ppl_nomem * 100
+        expected_contrib = (
+            (result["ppl_without_memory"] - result["ppl_with_memory"])
+            / result["ppl_without_memory"]
+            * 100
+        )
+        assert abs(result["memory_contribution_pct"] - expected_contrib) < 0.01
+
+    def test_model_without_blocks_returns_error(self):
+        """Models without .blocks attribute should return error dict."""
+        from src.training.validation import compute_memory_contribution
+
+        # Simple model without blocks
+        model = torch.nn.Linear(10, 10)
+
+        class MockLoader:
+            def __iter__(self):
+                yield {"input_ids": torch.zeros(1, 10), "labels": torch.zeros(1, 10)}
+
+        result = compute_memory_contribution(model, MockLoader(), "cpu")
+        assert "error" in result
