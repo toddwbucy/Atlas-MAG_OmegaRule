@@ -300,23 +300,20 @@ class AtlasMAGBlock(nn.Module):
         """
         Compute per-layer gate initialization.
 
-        Committee feedback: Previous aggressive init [0.50, 0.62] biased all
-        layers toward memory from step 1, preventing attention from developing
-        useful patterns. Combined with high polarization lambda, gates were
-        pushed further toward memory before attention had a chance.
+        Committee feedback (v6): All gates should start biased toward attention
+        to force attention to develop useful patterns FIRST. Memory must EARN
+        its dominance by proving it's better than a strong attention baseline.
 
-        Updated initialization (v2): Symmetric around 0.5
-        - Layer 0: sigmoid(-1.73) ≈ 0.15 (attention-favored)
-        - Layer mid: sigmoid(0) = 0.50 (balanced)
-        - Layer n-1: sigmoid(+1.73) ≈ 0.85 (memory-favored)
+        Updated initialization (v3): All layers attention-biased
+        - Layer 0: sigmoid(-1.73) ≈ 0.15 (strongly attention-favored)
+        - Layer n-1: sigmoid(-0.41) ≈ 0.40 (still attention-favored)
 
-        This is CRITICAL for polarization to work correctly:
-        - Gates < 0.5 get pushed toward 0 (attention)
-        - Gates > 0.5 get pushed toward 1 (memory)
+        The key insight: if gates start at 0.5+, the optimizer takes the easy
+        path through memory immediately, and attention atrophies. By starting
+        ALL layers below 0.5, we force the model to rely on attention first.
 
-        If all gates start below 0.5 (old init), polarization pushes ALL
-        toward attention, creating a self-fulfilling prophecy where memory
-        never gets a chance to prove useful.
+        Memory can still win if it proves useful - the gates are learnable.
+        But it has to earn that position, not start there by default.
 
         Args:
             layer_idx: Current layer index (0-indexed)
@@ -325,11 +322,11 @@ class AtlasMAGBlock(nn.Module):
         Returns:
             Gate initialization value (pre-sigmoid)
         """
-        # Linear interpolation from -1.73 (early) to +1.73 (late)
-        # sigmoid range [0.15, 0.85] — symmetric around 0.5
-        # Early layers favor attention, later layers favor memory
+        # Linear interpolation from -1.73 (early) to -0.41 (late)
+        # sigmoid range [0.15, 0.40] — all attention-biased
+        # Memory must prove it's better than attention baseline
         gate_start = -1.73  # sigmoid ≈ 0.15
-        gate_end = +1.73    # sigmoid ≈ 0.85
+        gate_end = -0.41    # sigmoid ≈ 0.40
 
         if n_layers <= 1:
             return (gate_start + gate_end) / 2
