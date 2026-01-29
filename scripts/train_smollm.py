@@ -49,7 +49,7 @@ from src.model.skeleton import AtlasMAGSkeleton
 from src.training.gate_monitor import GateMonitor
 from src.training.niah_probe import NIAHProbe
 from src.training.polarization import compute_gate_statistics, gate_polarization_loss
-from src.training.validation import run_validation
+from src.training.validation import compute_memory_contribution, run_validation
 from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
@@ -488,10 +488,17 @@ def train(config: TrainingConfig):
                     train_ppl = math.exp(min(lm_loss_for_log, 20))
                     ppl_gap = val_metrics["ppl"] / train_ppl if train_ppl > 0 else float("inf")
 
+                    # Compute memory contribution (functional PPL probe)
+                    # Committee v6: This replaces brittle unit tests with end-to-end measurement
+                    mem_metrics = compute_memory_contribution(model, val_loader, config.device)
+                    mem_contrib = mem_metrics.get("memory_contribution_pct", 0.0)
+                    mem_sign = "+" if mem_contrib > 0 else ""
+
                     logger.info(
                         f"  [Validation] Loss: {val_metrics['loss']:.4f}, "
                         f"PPL: {val_metrics['ppl']:.2f}, "
-                        f"Train/Val Gap: {ppl_gap:.2f}x"
+                        f"Train/Val Gap: {ppl_gap:.2f}x, "
+                        f"MemContrib: {mem_sign}{mem_contrib:.1f}%"
                     )
 
                     if val_metrics["ppl"] < best_val_ppl:
@@ -540,8 +547,13 @@ def train(config: TrainingConfig):
     # Final validation
     logger.info("=" * 70)
     final_metrics = run_validation(model, val_loader, config.device)
+    final_mem_metrics = compute_memory_contribution(model, val_loader, config.device)
+    final_mem_contrib = final_mem_metrics.get("memory_contribution_pct", 0.0)
+    final_mem_sign = "+" if final_mem_contrib > 0 else ""
+
     logger.info(
-        f"Final Validation: Loss={final_metrics['loss']:.4f}, PPL={final_metrics['ppl']:.2f}"
+        f"Final Validation: Loss={final_metrics['loss']:.4f}, PPL={final_metrics['ppl']:.2f}, "
+        f"MemContrib: {final_mem_sign}{final_mem_contrib:.1f}%"
     )
     logger.info(f"Best Validation PPL: {best_val_ppl:.2f}")
 
