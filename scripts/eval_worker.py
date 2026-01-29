@@ -202,8 +202,9 @@ def run_worker_loop(args):
                     result_entry["niah"] = {
                         "accuracy": niah_result.accuracy,
                         "passed": niah_result.passed,
-                        "ppl_mem": niah_result.needle_norm,
-                        "ppl_nomem": niah_result.retrieved_norm,
+                        "ppl_mem": niah_result.ppl_mem,
+                        "ppl_nomem": niah_result.ppl_nomem,
+                        "positions_tested": niah_result.positions_tested,
                         "probe_time_ms": niah_result.probe_time_ms,
                     }
 
