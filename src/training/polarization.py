@@ -28,11 +28,12 @@ def get_lambda_polar(step: int, total_steps: int, warmup_steps: int = 0) -> floa
 
     Schedule:
         - Optional warmup: λ = 0.0 for warmup_steps (attention head start)
-        - First 10% of training (post-warmup): λ = LAMBDA_INITIAL
-        - Remaining 90%: Exponential decay λ → LAMBDA_FINAL
+        - First 25% of training (post-warmup): λ = LAMBDA_INITIAL
+        - Remaining 75%: Exponential decay λ → LAMBDA_FINAL
 
-    The high initial λ forces gates to pick a side early. The decay allows
-    nuanced mixing once the architecture has proven it can route.
+    Committee v6 feedback: Extended from 10% to 25% to give modules more time
+    to compete fairly before forcing specialization. The previous aggressive
+    schedule combined with high λ=10 pushed gates to binary values too early.
 
     Args:
         step: Current training step (0-indexed)
