@@ -37,6 +37,7 @@ from src.config import (
     POLY_DEGREE,
     USE_POLY_MEMORY,
     VOCAB_SIZE,
+    WINDOW_SIZE,
     D,
 )
 
@@ -103,6 +104,66 @@ class GammaGate(nn.Module):
         return self.gate(x)
 
 
+def create_sliding_window_mask(
+    seq_len: int,
+    window_size: int,
+    device: torch.device,
+) -> Tensor:
+    """
+    Create a sliding window causal attention mask.
+
+    In the Atlas MAG architecture, attention uses a sliding window (SWA) that
+    can only see the last `window_size` tokens. This is CRITICAL for memory
+    to be useful: memory captures information from BEFORE the attention window,
+    while attention handles recent context.
+
+    Without sliding window: attention sees everything, memory is redundant.
+    With sliding window: attention sees recent tokens, memory retrieves older info.
+
+    Args:
+        seq_len: Sequence length
+        window_size: Number of tokens attention can see (including current position)
+        device: Device to create mask on
+
+    Returns:
+        Boolean mask of shape (seq_len, seq_len) where True = masked (don't attend)
+
+    Example for seq_len=6, window_size=3:
+        Position 0 attends to: [0]           (only self)
+        Position 1 attends to: [0, 1]        (self + 1 back)
+        Position 2 attends to: [0, 1, 2]     (self + 2 back, window full)
+        Position 3 attends to: [1, 2, 3]     (window slides, 0 masked)
+        Position 4 attends to: [2, 3, 4]     (window slides, 0-1 masked)
+        Position 5 attends to: [3, 4, 5]     (window slides, 0-2 masked)
+
+    Mask matrix (True = masked):
+        [[F T T T T T]
+         [F F T T T T]
+         [F F F T T T]
+         [T F F F T T]   <- position 0 now masked (outside window)
+         [T T F F F T]
+         [T T T F F F]]
+    """
+    # Start with full causal mask (upper triangle = True)
+    causal_mask = torch.triu(
+        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+        diagonal=1,
+    )
+
+    # Add sliding window constraint: mask positions beyond window_size back
+    # For each row i, mask columns j where j < i - window_size + 1
+    row_indices = torch.arange(seq_len, device=device).unsqueeze(1)
+    col_indices = torch.arange(seq_len, device=device).unsqueeze(0)
+
+    # Positions too far back (beyond window) should be masked
+    window_mask = col_indices < (row_indices - window_size + 1)
+
+    # Combine: masked if either causal OR beyond window
+    combined_mask = causal_mask | window_mask
+
+    return combined_mask
+
+
 class AtlasMAGBlock(nn.Module):
     """
     Single Atlas-MAG block combining attention and memory.
@@ -151,6 +212,9 @@ class AtlasMAGBlock(nn.Module):
         memory_dropout_rate: float = 0.0,
         # Polynomial low-rank compression
         poly_rank: int = 0,
+        # Sliding window attention size (Atlas paper: SWA)
+        # Memory captures info from BEFORE this window, attention handles recent context
+        attn_window_size: int = WINDOW_SIZE,
     ):
         super().__init__()
         self.dim = dim
@@ -159,6 +223,7 @@ class AtlasMAGBlock(nn.Module):
         self.disable_memory = disable_memory
         self.layer_idx = layer_idx
         self.memory_dropout_rate = memory_dropout_rate
+        self.attn_window_size = attn_window_size
 
         # TTL configuration
         self.ttl_enabled = ttl_enabled and not disable_memory  # TTL requires memory
@@ -230,12 +295,18 @@ class AtlasMAGBlock(nn.Module):
         useful patterns. Combined with high polarization lambda, gates were
         pushed further toward memory before attention had a chance.
 
-        New initialization maps to sigmoid values:
-        - Layer 0: sigmoid(-1.73) ≈ 0.15 (15% memory, attention-favored)
-        - Layer n-1: sigmoid(-0.41) ≈ 0.40 (40% memory, balanced)
+        Updated initialization (v2): Symmetric around 0.5
+        - Layer 0: sigmoid(-1.73) ≈ 0.15 (attention-favored)
+        - Layer mid: sigmoid(0) = 0.50 (balanced)
+        - Layer n-1: sigmoid(+1.73) ≈ 0.85 (memory-favored)
 
-        This gives attention a head start in early layers while allowing
-        later layers to develop memory usage organically.
+        This is CRITICAL for polarization to work correctly:
+        - Gates < 0.5 get pushed toward 0 (attention)
+        - Gates > 0.5 get pushed toward 1 (memory)
+
+        If all gates start below 0.5 (old init), polarization pushes ALL
+        toward attention, creating a self-fulfilling prophecy where memory
+        never gets a chance to prove useful.
 
         Args:
             layer_idx: Current layer index (0-indexed)
@@ -244,10 +315,11 @@ class AtlasMAGBlock(nn.Module):
         Returns:
             Gate initialization value (pre-sigmoid)
         """
-        # Linear interpolation from -1.73 (early) to -0.41 (late)
-        # sigmoid range [0.15, 0.40] — attention-favored for early layers
+        # Linear interpolation from -1.73 (early) to +1.73 (late)
+        # sigmoid range [0.15, 0.85] — symmetric around 0.5
+        # Early layers favor attention, later layers favor memory
         gate_start = -1.73  # sigmoid ≈ 0.15
-        gate_end = -0.41    # sigmoid ≈ 0.40
+        gate_end = +1.73    # sigmoid ≈ 0.85
 
         if n_layers <= 1:
             return (gate_start + gate_end) / 2
@@ -342,17 +414,23 @@ class AtlasMAGBlock(nn.Module):
                 ttl_stats["omega_loss"] = omega_loss.item()
                 ttl_stats["layer_idx"] = self.layer_idx
 
-        # === SWA Branch: Standard scaled dot-product attention ===
+        # === SWA Branch: Sliding Window Attention ===
+        # Atlas MAG uses sliding window attention so that memory can capture
+        # information from BEFORE the attention window. Without SWA, attention
+        # sees everything and memory becomes redundant.
         scale = self.head_dim**-0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
 
-        # Apply causal mask
+        # Apply sliding window causal mask
         if attention_mask is None:
-            causal_mask = torch.triu(
-                torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
-                diagonal=1,
+            # Create sliding window mask: each position can only attend to
+            # the last attn_window_size tokens (including itself)
+            swa_mask = create_sliding_window_mask(
+                seq_len=seq_len,
+                window_size=self.attn_window_size,
+                device=x.device,
             )
-            attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
+            attn_weights = attn_weights.masked_fill(swa_mask, float("-inf"))
         else:
             attn_weights = attn_weights.masked_fill(~attention_mask, float("-inf"))
 

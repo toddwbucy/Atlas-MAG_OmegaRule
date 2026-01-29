@@ -198,6 +198,17 @@ class AtlasMemoryPoly(nn.Module):
         # Project key_dim → dim for output
         self.proj_up = nn.Linear(key_dim, dim, bias=bias)
 
+        # Normalize output to match attention scale (Atlas paper: "layer norm at end of chunk")
+        # This ensures memory contribution has similar magnitude to attention output,
+        # giving the learned gate a fair comparison between the two branches.
+        self.output_norm = nn.LayerNorm(dim)
+
+        # Learnable output scale initialized to match typical attention output magnitude.
+        # LayerNorm gives unit variance (~0.8-1.0 RMS), but attention output is ~0.15 RMS.
+        # This scale factor brings memory output to the same ballpark as attention,
+        # preventing either branch from dominating purely due to magnitude mismatch.
+        self.output_scale = nn.Parameter(torch.tensor(0.15))
+
         # Precompute indices for upper triangular (only needed for degree 2)
         if poly_degree == 2:
             self.register_buffer(
@@ -330,8 +341,11 @@ class AtlasMemoryPoly(nn.Module):
         # Memory output in key dimension
         mem_key: Tensor = self.w1(gated)  # (batch, seq_len, key_dim)
 
-        # Project back to full dimension
-        contribution: Tensor = self.proj_up(mem_key)  # (batch, seq_len, dim)
+        # Project back to full dimension, normalize, and scale to match attention magnitude
+        # 1. proj_up: key_dim → dim
+        # 2. output_norm: normalize to unit variance (stable gradients)
+        # 3. output_scale: learnable scale to match attention output magnitude (~0.15)
+        contribution: Tensor = self.output_scale * self.output_norm(self.proj_up(mem_key))
 
         if return_contribution:
             return contribution
