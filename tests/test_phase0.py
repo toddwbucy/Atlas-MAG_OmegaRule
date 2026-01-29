@@ -227,25 +227,28 @@ class TestAtlasMAGBlock:
     def test_gate_value(self):
         """Gate should be accessible with per-layer initialization.
 
-        Symmetric initialization (0.15-0.85) spanning both sides of 0.5.
-        This ensures polarization pushes early layers toward attention (0)
-        and later layers toward memory (1), giving both branches a chance.
+        All-attention-biased initialization (0.15-0.40) — all gates below 0.5.
+        This forces attention to develop useful patterns FIRST. Memory must
+        EARN its dominance by proving it's better than a strong attention
+        baseline. Committee v6 feedback: previous 0.15-0.85 range caused
+        "attention atrophy" as memory was the path of least resistance.
         """
-        # Test layer 0: sigmoid(-1.73) ≈ 0.15 (attention-favored)
+        # Test layer 0: sigmoid(-1.73) ≈ 0.15 (strongly attention-favored)
         block_0 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=0, n_layers=12)
         gate_0 = block_0.get_gate_value()
         assert 0 <= gate_0 <= 1
         # Layer 0 should start at ~15% memory (attention-favored)
         assert 0.13 <= gate_0 <= 0.18
 
-        # Test last layer: sigmoid(+1.73) ≈ 0.85 (memory-favored)
+        # Test last layer: sigmoid(-0.41) ≈ 0.40 (still attention-favored)
         block_11 = AtlasMAGBlock(dim=D, n_heads=12, layer_idx=11, n_layers=12)
         gate_11 = block_11.get_gate_value()
-        # Layer 11 should be memory-favored: ~85% memory
-        assert 0.83 <= gate_11 <= 0.88
+        # Layer 11 should still be attention-favored: ~40% memory
+        assert 0.38 <= gate_11 <= 0.42
 
-        # Verify later layers have higher gates (more memory contribution)
+        # Verify later layers have higher gates (but all still < 0.5)
         assert gate_11 > gate_0
+        assert gate_11 < 0.5  # All gates attention-biased
 
 
 class TestAtlasMAGSkeleton:
