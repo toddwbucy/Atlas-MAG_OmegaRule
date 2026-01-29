@@ -94,9 +94,9 @@ TTL_RESET_MODE: str = "sequence"
 # Gate Polarization Constants (PRD Section: Gate Polarization)
 # =============================================================================
 
-LAMBDA_INITIAL: float = 1.0       # First 10% of training (reduced from 10.0 per committee feedback)
+LAMBDA_INITIAL: float = 1.0       # First 25% of training (reduced from 10.0 per committee feedback)
 LAMBDA_FINAL: float = 0.01        # After annealing (reduced from 0.1)
-POLARIZATION_ANNEAL_RATIO: float = 0.1  # When to switch from initial to final
+POLARIZATION_ANNEAL_RATIO: float = 0.25  # When to switch from initial to final (extended from 0.1)
 POLARIZATION_WARMUP_STEPS: int = 2000   # Steps before polarization activates (attention head start)
 
 
