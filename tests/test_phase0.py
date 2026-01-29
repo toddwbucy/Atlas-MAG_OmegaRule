@@ -398,17 +398,17 @@ class TestSlidingWindowAttention:
 
         mask = create_sliding_window_mask(seq_len=6, window_size=3, device=torch.device("cpu"))
         # Position 3 should NOT see position 0 (0 < 3 - 3 + 1 = 1)
-        assert mask[3, 0] == True  # masked
-        assert mask[3, 1] == False  # can see
-        assert mask[3, 2] == False  # can see
-        assert mask[3, 3] == False  # can see (self)
+        assert mask[3, 0]      # masked
+        assert not mask[3, 1]  # can see
+        assert not mask[3, 2]  # can see
+        assert not mask[3, 3]  # can see (self)
         # Position 5 should NOT see positions 0, 1, 2
-        assert mask[5, 0] == True  # masked
-        assert mask[5, 1] == True  # masked
-        assert mask[5, 2] == True  # masked
-        assert mask[5, 3] == False  # can see
-        assert mask[5, 4] == False  # can see
-        assert mask[5, 5] == False  # can see (self)
+        assert mask[5, 0]      # masked
+        assert mask[5, 1]      # masked
+        assert mask[5, 2]      # masked
+        assert not mask[5, 3]  # can see
+        assert not mask[5, 4]  # can see
+        assert not mask[5, 5]  # can see (self)
 
     def test_sliding_window_mask_early_positions(self):
         """Early positions should see all available (no sliding yet)."""
@@ -416,12 +416,29 @@ class TestSlidingWindowAttention:
 
         mask = create_sliding_window_mask(seq_len=6, window_size=3, device=torch.device("cpu"))
         # Position 0: only sees self
-        assert mask[0, 0] == False  # can see
-        assert mask[0, 1] == True   # future - masked
+        assert not mask[0, 0]  # can see
+        assert mask[0, 1]      # future - masked
         # Position 2: sees 0, 1, 2 (window not full yet counts from 0)
-        assert mask[2, 0] == False  # can see
-        assert mask[2, 1] == False  # can see
-        assert mask[2, 2] == False  # can see
+        assert not mask[2, 0]  # can see
+        assert not mask[2, 1]  # can see
+        assert not mask[2, 2]  # can see
+
+    def test_sliding_window_mask_invalid_window_size(self):
+        """Invalid window_size should raise ValueError."""
+        from src.model.skeleton import create_sliding_window_mask
+        import pytest
+
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            create_sliding_window_mask(seq_len=6, window_size=0, device=torch.device("cpu"))
+
+    def test_sliding_window_mask_large_window_clamped(self):
+        """Window larger than seq_len should be clamped (acts as full causal)."""
+        from src.model.skeleton import create_sliding_window_mask
+
+        # window_size=100 > seq_len=6, should clamp to 6 (full causal)
+        mask = create_sliding_window_mask(seq_len=6, window_size=100, device=torch.device("cpu"))
+        expected_causal = torch.triu(torch.ones(6, 6, dtype=torch.bool), diagonal=1)
+        assert torch.equal(mask, expected_causal)
 
     def test_block_uses_sliding_window(self):
         """AtlasMAGBlock should use sliding window by default."""

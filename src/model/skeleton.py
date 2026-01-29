@@ -122,11 +122,15 @@ def create_sliding_window_mask(
 
     Args:
         seq_len: Sequence length
-        window_size: Number of tokens attention can see (including current position)
+        window_size: Number of tokens attention can see (including current position).
+            Must be >= 1. Values > seq_len are clamped to seq_len.
         device: Device to create mask on
 
     Returns:
         Boolean mask of shape (seq_len, seq_len) where True = masked (don't attend)
+
+    Raises:
+        ValueError: If window_size < 1 (would mask all positions, causing NaN in softmax)
 
     Example for seq_len=6, window_size=3:
         Position 0 attends to: [0]           (only self)
@@ -144,6 +148,12 @@ def create_sliding_window_mask(
          [T T F F F T]
          [T T T F F F]]
     """
+    # Validate window_size to prevent NaN from masking all positions
+    if window_size < 1:
+        raise ValueError("window_size must be >= 1")
+    if window_size > seq_len:
+        window_size = seq_len
+
     # Start with full causal mask (upper triangle = True)
     causal_mask = torch.triu(
         torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
@@ -421,18 +431,23 @@ class AtlasMAGBlock(nn.Module):
         scale = self.head_dim**-0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
 
-        # Apply sliding window causal mask
-        if attention_mask is None:
-            # Create sliding window mask: each position can only attend to
-            # the last attn_window_size tokens (including itself)
-            swa_mask = create_sliding_window_mask(
-                seq_len=seq_len,
-                window_size=self.attn_window_size,
-                device=x.device,
-            )
-            attn_weights = attn_weights.masked_fill(swa_mask, float("-inf"))
+        # Apply sliding window causal mask (always), then combine with any external mask
+        # SWA is always applied to ensure memory has a purpose (can retrieve info
+        # from before the attention window). External masks (e.g., padding) are
+        # combined via OR so both constraints are enforced.
+        swa_mask = create_sliding_window_mask(
+            seq_len=seq_len,
+            window_size=self.attn_window_size,
+            device=x.device,
+        )
+        if attention_mask is not None:
+            # Combine: mask if either SWA says mask OR external mask says mask
+            # External mask convention: True = attend, False = mask
+            # SWA mask convention: True = mask, False = attend
+            combined_mask = swa_mask | ~attention_mask
         else:
-            attn_weights = attn_weights.masked_fill(~attention_mask, float("-inf"))
+            combined_mask = swa_mask
+        attn_weights = attn_weights.masked_fill(combined_mask, float("-inf"))
 
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_out = torch.matmul(attn_weights, v)
