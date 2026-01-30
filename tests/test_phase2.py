@@ -706,12 +706,21 @@ class TestPhase2Integration:
 class TestMemoryWiring:
     """Tests for memory wiring in AtlasMAGBlock.
 
-    Verifies that AtlasMemoryPoly is directly wired to the block
-    without CausalQKMemoryProjection intermediary.
+    Verifies that AtlasMemoryPoly is wired WITH CausalQKMemoryProjection,
+    which is ESSENTIAL for cross-position retrieval (Omega Rule, Atlas paper Eq. 9).
+    Without qk_memory, the memory module is just a position-wise MLP with no retrieval!
     """
 
-    def test_block_has_no_qk_memory(self):
-        """AtlasMAGBlock should NOT have qk_memory attribute."""
+    def test_block_has_qk_memory(self):
+        """AtlasMAGBlock MUST have qk_memory when memory is enabled.
+
+        The CausalQKMemoryProjection implements the Omega Rule:
+            M_t = M_persistent + Σ γ^(t-i) * (k_i ⊗ k_i)
+            q' = M_t @ q / norm_sum
+
+        This is what enables cross-position retrieval - without it,
+        memory has no way to retrieve information from past positions!
+        """
         from src.model.skeleton import AtlasMAGBlock
 
         block = AtlasMAGBlock(
@@ -720,7 +729,8 @@ class TestMemoryWiring:
             disable_memory=False,
         )
 
-        assert not hasattr(block, 'qk_memory') or block.qk_memory is None
+        assert hasattr(block, 'qk_memory'), "Block missing qk_memory attribute"
+        assert block.qk_memory is not None, "qk_memory is None - cross-position retrieval disabled!"
 
     def test_block_has_memory_module(self):
         """AtlasMAGBlock should have memory module when enabled."""
