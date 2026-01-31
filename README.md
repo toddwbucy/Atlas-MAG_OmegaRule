@@ -67,12 +67,12 @@ poetry install
 ### Training
 
 ```bash
-# Train a 44M parameter model
+# Train the 42.6M parameter model (Small config)
 poetry run python scripts/train.py \
     --dim 512 \
     --layers 6 \
     --heads 8 \
-    --output-dir runs/atlas_44m \
+    --output-dir runs/atlas_42m \
     --batch-size 24 \
     --gradient-accumulation-steps 4 \
     --max-steps 11000
@@ -80,7 +80,7 @@ poetry run python scripts/train.py \
 # Ablation: Train without memory (attention-only baseline)
 poetry run python scripts/train.py \
     --disable-memory \
-    --output-dir runs/atlas_44m_ablation
+    --output-dir runs/atlas_42m_ablation
 ```
 
 ### Concurrent Evaluation
@@ -88,18 +88,16 @@ poetry run python scripts/train.py \
 ```bash
 # Run eval worker on separate GPU (watches for checkpoints)
 poetry run python scripts/eval_worker.py \
-    --checkpoint-dir runs/atlas_44m \
+    --checkpoint-dir runs/atlas_42m \
     --device cuda:1
 ```
 
 ### Model Configurations
 
-| Config | Params | dim | layers | heads |
-|--------|--------|-----|--------|-------|
-| Tiny | 33.7M | 384 | 6 | 6 |
-| Small | 44.1M | 512 | 6 | 8 |
-| Medium | 67.0M | 512 | 8 | 8 |
-| Base | 195.1M | 768 | 12 | 12 |
+| Config | Params | dim | layers | heads | Purpose |
+|--------|--------|-----|--------|-------|---------|
+| Small | 42.6M | 512 | 6 | 8 | Architecture validation |
+| Base | 124.7M | 768 | 12 | 12 | First real evaluation |
 
 ## Project Structure
 
@@ -122,16 +120,17 @@ Atlas-MAG_OmegaRule/
 │   ├── data/
 │   │   ├── smollm_dataset.py    # SmolLM-Corpus streaming
 │   │   └── tokenizer.py         # BPE tokenizer wrapper
-│   └── nn/
-│       ├── newton_schulz.py     # NS-5 orthogonalization (Table 1)
-│       ├── rmsnorm.py           # RMS normalization
-│       └── swiglu.py            # SwiGLU activation
+│   ├── nn/
+│   │   ├── newton_schulz.py     # NS-5 orthogonalization (Table 1)
+│   │   ├── rmsnorm.py           # RMS normalization
+│   │   └── swiglu.py            # SwiGLU activation
+│   └── utils/
+│       └── logging.py           # Logging utilities
 ├── scripts/
 │   ├── train.py                 # Main training script
 │   ├── eval_worker.py           # Async evaluation worker
 │   └── quick_inference.py       # Checkpoint testing
-├── tests/                       # Test suite (109 tests)
-└── reports/                     # Validation reports
+└── tests/                       # Test suite (109 tests)
 ```
 
 ## Key Equations
