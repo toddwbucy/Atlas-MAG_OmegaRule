@@ -10,12 +10,12 @@ These tests verify the dataset infrastructure meets our requirements:
 - Validation set size (≥2000 samples)
 """
 
-import pytest
-from pathlib import Path
 import sys
-from unittest.mock import Mock, patch, MagicMock
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 import torch
-from torch.utils.data import DataLoader
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -367,7 +367,7 @@ class TestHelperFunctions:
 
     def test_discover_subsets(self):
         """discover_subsets should return SubsetInfo objects."""
-        from src.data.smollm_dataset import discover_subsets, SMOLLM_PATH
+        from src.data.smollm_dataset import SMOLLM_PATH, discover_subsets
 
         if not SMOLLM_PATH.exists():
             pytest.skip("SmolLM corpus not available")
@@ -383,8 +383,9 @@ class TestHelperFunctions:
 
     def test_split_row_groups(self):
         """split_row_groups_for_validation should create non-overlapping splits."""
-        from src.data.smollm_dataset import split_row_groups_for_validation, SubsetInfo
         from pathlib import Path
+
+        from src.data.smollm_dataset import SubsetInfo, split_row_groups_for_validation
 
         # Create mock subset info
         subset = SubsetInfo(

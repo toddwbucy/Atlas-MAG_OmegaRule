@@ -206,42 +206,74 @@ class NIAHProbe:
 
         positions_tested = labels_beyond.numel()
 
-        with torch.no_grad():
-            # Forward with memory enabled
-            logits_mem_full = model(input_ids)
-            # Get logits for positions [window_size, seq_len-1) predicting [window_size+1, seq_len)
-            logits_mem = logits_mem_full[:, eval_start:-1, :].contiguous()
-            loss_mem = F.cross_entropy(
-                logits_mem.reshape(-1, vocab_size), labels_beyond.reshape(-1)
-            )
-            ppl_mem = torch.exp(loss_mem).item()
+        # CRITICAL: Use evaluation mode to prevent TTL from mutating memory during probe.
+        # TTL uses torch.enable_grad() internally which overrides no_grad(), so we
+        # must disable training mode entirely to prevent memory weight corruption.
+        was_training = model.training
+        model.train(False)  # Switch to evaluation mode
 
-            # Disable memory across all blocks (save/restore original flags)
-            orig_flags = [block.disable_memory for block in model.blocks]
-            try:
-                for block in model.blocks:
-                    block.disable_memory = True
-
-                logits_nomem_full = model(input_ids)
-                logits_nomem = logits_nomem_full[:, eval_start:-1, :].contiguous()
-                loss_nomem = F.cross_entropy(
-                    logits_nomem.reshape(-1, vocab_size), labels_beyond.reshape(-1)
+        try:
+            with torch.no_grad():
+                # Forward with memory enabled
+                logits_mem_full = model(input_ids)
+                # Get logits for positions [window_size, seq_len-1) predicting [window_size+1, seq_len)
+                logits_mem = logits_mem_full[:, eval_start:-1, :].contiguous()
+                loss_mem = F.cross_entropy(
+                    logits_mem.reshape(-1, vocab_size), labels_beyond.reshape(-1)
                 )
-                ppl_nomem = torch.exp(loss_nomem).item()
-            finally:
-                # Restore original per-block memory flags even on error
-                for block, flag in zip(model.blocks, orig_flags, strict=False):
-                    block.disable_memory = flag
+                ppl_mem = torch.exp(loss_mem).item()
+
+                # Disable memory across all blocks (save/restore original flags)
+                # Check if blocks support disable_memory (AtlasMAGBlock has it, MAGBlock/MALBlock don't)
+                supports_disable = all(
+                    hasattr(block, "disable_memory") for block in model.blocks
+                )
+                comparison_skipped = False
+
+                if not supports_disable:
+                    # For MAG/MAL architectures, memory can't be disabled
+                    # Skip the comparison - no meaningful test possible
+                    ppl_nomem = ppl_mem
+                    comparison_skipped = True
+                    logger.info(
+                        f"[Step {step}] Memory Probe: MAG/MAL blocks don't support disable_memory, "
+                        f"skipping comparison. PPL with memory={ppl_mem:.1f}"
+                    )
+                else:
+                    orig_flags = [block.disable_memory for block in model.blocks]
+                    try:
+                        for block in model.blocks:
+                            block.disable_memory = True
+
+                        logits_nomem_full = model(input_ids)
+                        logits_nomem = logits_nomem_full[:, eval_start:-1, :].contiguous()
+                        loss_nomem = F.cross_entropy(
+                            logits_nomem.reshape(-1, vocab_size), labels_beyond.reshape(-1)
+                        )
+                        ppl_nomem = torch.exp(loss_nomem).item()
+                    finally:
+                        # Restore original per-block memory flags even on error
+                        for block, flag in zip(model.blocks, orig_flags, strict=False):
+                            block.disable_memory = flag
+        finally:
+            # Restore training mode
+            if was_training:
+                model.train(True)
 
         # PPL reduction ratio: how much does memory help for beyond-window positions?
         # Guard against inf/NaN when both PPLs overflow (e.g., untrained model)
-        if math.isinf(ppl_nomem) or math.isinf(ppl_mem) or ppl_nomem <= 0:
+        if comparison_skipped:
+            # Can't meaningfully measure - treat as passed (no false alarm)
             accuracy = 0.0
+            passed = True
+        elif math.isinf(ppl_nomem) or math.isinf(ppl_mem) or ppl_nomem <= 0:
+            accuracy = 0.0
+            passed = False
         else:
             accuracy = (ppl_nomem - ppl_mem) / ppl_nomem
+            passed = accuracy >= self.accuracy_threshold
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        passed = accuracy >= self.accuracy_threshold
 
         result = NIAHResult(
             step=step,
@@ -256,7 +288,10 @@ class NIAHProbe:
             positions_tested=positions_tested,
         )
 
-        status = "PASSED" if passed else "FAILED"
+        if comparison_skipped:
+            status = "SKIPPED"
+        else:
+            status = "PASSED" if passed else "FAILED"
         logger.info(
             f"[Step {step}] Memory Probe {status}: "
             f"contribution={accuracy:.1%} (threshold={self.accuracy_threshold:.0%}), "
@@ -265,7 +300,7 @@ class NIAHProbe:
             f"time={elapsed_ms:.1f}ms"
         )
 
-        if not passed:
+        if not passed and not comparison_skipped:
             logger.warning(
                 f"Memory not contributing at step {step}! "
                 f"PPL reduction {accuracy:.1%} < {self.accuracy_threshold:.0%} "

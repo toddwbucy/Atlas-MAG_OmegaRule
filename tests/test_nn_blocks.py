@@ -4,17 +4,18 @@ Tests for custom neural network building blocks.
 Tests RMSNorm, SwiGLU, and Newton-Schulz implementations.
 """
 
-import pytest
-import torch
 import sys
 from pathlib import Path
+
+import pytest
+import torch
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.nn.newton_schulz import newton_schulz, newton_schulz_batched, orthogonality_error
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU, SwiGLUFused
-from src.nn.newton_schulz import newton_schulz, newton_schulz_batched, orthogonality_error
 
 
 class TestRMSNorm:

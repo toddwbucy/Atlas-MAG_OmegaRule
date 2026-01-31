@@ -22,6 +22,8 @@ Usage:
     python scripts/train_smollm.py --disable-memory
 
 Default runs on GPU 0 with 195M model configuration.
+
+Evaluation is decoupled - use scripts/eval_worker.py to evaluate checkpoints on GPU1.
 """
 
 import argparse
@@ -39,17 +41,12 @@ from torch.optim import AdamW
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import LAMBDA_FINAL, LAMBDA_INITIAL
-from src.data.smollm_dataset import (
-    create_smollm_dataloader,
-    create_smollm_val_dataloader,
-)
+from src.data.smollm_dataset import create_smollm_dataloader
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
-from src.training.gate_monitor import GateMonitor
-from src.training.niah_probe import NIAHProbe
-from src.training.polarization import compute_gate_statistics, gate_polarization_loss
-from src.training.validation import compute_memory_contribution, run_validation
+# DEADCODE: MAGBlock has no explicit gate params, these produce meaningless output
+# from src.training.gate_monitor import GateMonitor
+# from src.training.polarization import compute_gate_statistics
 from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
@@ -78,23 +75,12 @@ class TrainingConfig:
     max_steps: Optional[int] = None  # Optional step limit for quick tests
     gradient_accumulation_steps: int = 1  # Accumulate gradients over N micro-batches
 
-    # NIAH (Needle-in-a-Haystack) probes for memory validation
-    # These verify the memory module actually retrieves information, not just trains well
-    niah_enabled: bool = True
-    niah_frequency: int = 500  # Run NIAH probe every N steps
-    niah_haystack_size: int = 4  # Number of test sequences for memory probe
-    niah_threshold: float = 0.1  # Min PPL reduction ratio (10%)
-
-    # Polarization
-    use_polarization: bool = True
-    lambda_initial: float = LAMBDA_INITIAL
-    lambda_final: float = LAMBDA_FINAL
+    # Note: Polarization loss was removed - it was NOT part of the Atlas paper.
+    # Gates learn their values purely through the main training objective.
 
     # Memory architecture
     poly_degree: int = 2  # Polynomial feature degree (1 for small models, 2 for 195M+)
     poly_rank: int = 512  # Low-rank compression dim for polynomial features (0=none)
-    memory_dropout: float = 0.20  # Fraction of steps with memory killed
-    polarization_warmup: int = 2000  # Steps before polarization activates
     frozen_m0_ratio: float = 0.0  # Fraction of steps with static memory frozen
 
     # TTL tuning
@@ -118,13 +104,11 @@ class TrainingConfig:
         }
     )
     num_workers: int = 4
-    val_samples: int = 2000  # Much larger than Dolmino's 127!
 
     # Checkpoints
     output_dir: str = "runs/smollm_195m"
     save_every: int = 500
     log_every: int = 10
-    val_every: int = 200
 
     # Device
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -165,7 +149,6 @@ def train(config: TrainingConfig):
     )
     logger.info(f"Data subsets: {config.subsets}")
     logger.info(f"Subset weights: {config.subset_weights}")
-    logger.info(f"Validation samples: {config.val_samples}")
     logger.info(f"Device: {config.device}")
     logger.info(f"Output: {output_dir}")
 
@@ -190,7 +173,6 @@ def train(config: TrainingConfig):
         disable_memory=config.disable_memory,
         poly_degree=config.poly_degree,
         poly_rank=config.poly_rank,
-        memory_dropout_rate=config.memory_dropout,
         ttl_eta=config.ttl_eta,
         ttl_ns_iters=config.ns_iterations,
         ttl_adaptive_eta=config.ttl_adaptive_eta,
@@ -204,8 +186,16 @@ def train(config: TrainingConfig):
     )
     logger.info(f"Mode: {mode}")
 
-    # Create data loaders
-    logger.info("Creating data loaders...")
+    # Verify GPU placement
+    param_device = next(model.parameters()).device
+    logger.info(f"Model device: {param_device}")
+    if "cuda" in str(param_device):
+        gpu_idx = param_device.index if param_device.index is not None else 0
+        gpu_mem_mb = torch.cuda.memory_allocated(gpu_idx) / 1e6
+        logger.info(f"GPU {gpu_idx} memory allocated: {gpu_mem_mb:.1f} MB")
+
+    # Create data loader
+    logger.info("Creating data loader...")
     train_loader = create_smollm_dataloader(
         tokenizer=tokenizer,
         batch_size=config.batch_size,
@@ -213,22 +203,6 @@ def train(config: TrainingConfig):
         subsets=config.subsets,
         subset_weights=config.subset_weights,
         num_workers=config.num_workers,
-    )
-
-    val_loader = create_smollm_val_dataloader(
-        tokenizer=tokenizer,
-        batch_size=config.batch_size,
-        seq_len=config.seq_len,
-        num_samples=config.val_samples,
-        subsets=config.subsets,
-    )
-
-    # Initial validation to check baseline
-    logger.info("Running initial validation...")
-    init_val = run_validation(model, val_loader, config.device)
-    logger.info(f"Initial validation: Loss={init_val['loss']:.4f}, PPL={init_val['ppl']:.2f}")
-    logger.info(
-        f"  Validation set: {init_val['num_batches']} batches, {init_val['num_tokens']} tokens"
     )
 
     # Estimate total steps (account for gradient accumulation)
@@ -263,6 +237,8 @@ def train(config: TrainingConfig):
         # We need both IDs (for filtering) and the params themselves (for zeroing grads)
         memory_param_ids: set[int] = set()
         for block in model.blocks:
+            if not hasattr(block, "memory"):
+                continue  # Skip attention-only blocks
             for p in block.memory.parameters():
                 memory_param_ids.add(id(p))
                 memory_params.append(p)
@@ -285,45 +261,28 @@ def train(config: TrainingConfig):
 
     scheduler = get_lr_schedule(optimizer, warmup_steps, est_steps)
 
-    # Initialize gate monitor for early detection of gate collapse
-    gate_monitor: GateMonitor | None = None
-    if not config.disable_memory:
-        gate_monitor = GateMonitor()
-        logger.info("GateMonitor enabled: tracking gate health at steps 100, 500")
-
-    # Initialize NIAH probe for memory retrieval validation
-    # This tests whether memory actually retrieves information, not just trains well
-    niah_probe: NIAHProbe | None = None
-    if config.niah_enabled and not config.disable_memory:
-        niah_probe = NIAHProbe(
-            dim=config.dim,
-            probe_frequency=config.niah_frequency,
-            haystack_size=config.niah_haystack_size,
-            accuracy_threshold=config.niah_threshold,
-        )
-        logger.info(
-            f"MemoryProbe enabled: freq={config.niah_frequency}, "
-            f"n_seqs={config.niah_haystack_size}, threshold={config.niah_threshold}"
-        )
-        # Cache a real validation batch for meaningful probe measurements
-        probe_batch = next(iter(val_loader))["input_ids"]
-        niah_probe.set_eval_batch(probe_batch)
+    # DEADCODE: Gate monitor was for old AtlasMAGBlock with explicit gates
+    # MAGBlock uses element-wise gating (sigmoid(mem_out)), no explicit gate params
+    # gate_monitor: GateMonitor | None = None
+    # if not config.disable_memory:
+    #     gate_monitor = GateMonitor()
+    #     logger.info("GateMonitor enabled: tracking gate health at steps 100, 500")
 
     # Training loop
     logger.info("Starting training...")
+    logger.info(f"Training will use device: {config.device}")
     model.train()
 
     global_step = 0
     micro_step = 0  # Counts individual forward passes
-    best_val_ppl = float("inf")
     start_time = time.time()
     tokens_seen = 0
     accum_steps = config.gradient_accumulation_steps
 
     # For accumulating losses across micro-batches
     accum_lm_loss = 0.0
-    accum_polar_loss = 0.0
     accum_tokens = 0
+    is_frozen_step = False  # Tracks frozen M0 state for current accumulation window
 
     for epoch in range(config.epochs):
         epoch_loss = 0.0
@@ -340,11 +299,14 @@ def train(config: TrainingConfig):
             # Frozen M0: occasionally freeze static memory weights so only TTL can reduce loss
             # NOTE: We disable TTL on frozen steps because freeze_static_weights()
             # sets requires_grad=False, which breaks torch.autograd.grad() in ttl_step.
-            is_frozen_step = (
-                config.frozen_m0_ratio > 0
-                and not config.disable_memory
-                and torch.rand(1).item() < config.frozen_m0_ratio
-            )
+            # IMPORTANT: Decision is made once per accumulation window (not per micro-batch)
+            # to ensure consistent gradient computation across all micro-batches.
+            if micro_step % accum_steps == 0:
+                is_frozen_step = (
+                    config.frozen_m0_ratio > 0
+                    and not config.disable_memory
+                    and torch.rand(1).item() < config.frozen_m0_ratio
+                )
             if is_frozen_step:
                 for block in model.blocks:
                     block.memory.freeze_static_weights()
@@ -359,18 +321,8 @@ def train(config: TrainingConfig):
                 labels.view(-1),
             )
 
-            # Gate polarization loss (skip if memory disabled)
+            # Total loss (no auxiliary losses - paper fidelity)
             total_loss = lm_loss / accum_steps  # Scale for accumulation
-            polar_loss_value = 0.0
-
-            if config.use_polarization and not config.disable_memory:
-                # Get gate parameters directly to preserve gradients
-                # (model.get_gate_values() returns detached floats, not grad-connected tensors)
-                gate_params = model.get_gate_params()  # Returns list of nn.Parameters
-                gates = torch.sigmoid(torch.stack(gate_params))
-                polar_loss = gate_polarization_loss(gates, global_step, est_steps, warmup_steps=config.polarization_warmup)
-                total_loss = (lm_loss + polar_loss) / accum_steps
-                polar_loss_value = polar_loss.item()
 
             # Backward pass (accumulates gradients)
             total_loss.backward()
@@ -392,7 +344,6 @@ def train(config: TrainingConfig):
             # Track stats for this micro-batch
             batch_tokens = labels.numel()
             accum_lm_loss += lm_loss.item() * batch_tokens
-            accum_polar_loss += polar_loss_value * batch_tokens
             accum_tokens += batch_tokens
             tokens_seen += batch_tokens
             micro_step += 1
@@ -409,114 +360,44 @@ def train(config: TrainingConfig):
 
                 # Compute averaged losses for logging (before resetting)
                 lm_loss_for_log = accum_lm_loss / accum_tokens if accum_tokens > 0 else 0
-                polar_loss_for_log = accum_polar_loss / accum_tokens if accum_tokens > 0 else 0
 
                 # Update epoch stats
                 epoch_loss += accum_lm_loss
                 epoch_tokens += accum_tokens
 
-                # NIAH probe: verify memory retrieval is working
-                # Runs at configured frequency to catch memory degradation early
-                # Check BEFORE incrementing global_step so step 0 baseline probe runs
-                if niah_probe is not None and niah_probe.should_probe(global_step):
-                    was_training = model.training
-                    model.train(False)  # Set to eval mode
-                    niah_result = niah_probe.run_probe(model, global_step, config.device)
-                    model.train(was_training)  # Restore training mode
-
-                    if not niah_result.passed:
-                        logger.warning(
-                            f"  [MEMORY PROBE FAILED] PPL reduction: {niah_result.accuracy:.1%} "
-                            f"< {config.niah_threshold:.0%} "
-                            f"(mem={niah_result.needle_norm:.1f}, nomem={niah_result.retrieved_norm:.1f})"
-                        )
-                    else:
-                        logger.info(
-                            f"  [MEMORY PROBE PASSED] PPL reduction: {niah_result.accuracy:.1%} "
-                            f"(mem={niah_result.needle_norm:.1f}, nomem={niah_result.retrieved_norm:.1f})"
-                        )
-
                 global_step += 1
 
                 # Reset accumulators
                 accum_lm_loss = 0.0
-                accum_polar_loss = 0.0
                 accum_tokens = 0
 
-                # Gate health monitoring (every step when memory enabled)
-                # GateMonitor.check() handles step 100/500 checks internally
-                if gate_monitor is not None:
-                    gate_values_tensor = torch.tensor(model.get_gate_values())
-                    monitor_stats = gate_monitor.check(gate_values_tensor, global_step)
-
-                    # Log warning if variance check failed at step 500
-                    if monitor_stats.get("variance_check_passed") is False:
-                        logger.warning(
-                            f"[Step {global_step}] GATE HEALTH WARNING: "
-                            f"Variance check failed - gates may be collapsing!"
-                        )
+                # DEADCODE: Gate monitoring was for old AtlasMAGBlock
+                # if gate_monitor is not None:
+                #     gate_values_tensor = torch.tensor(model.get_gate_values())
+                #     monitor_stats = gate_monitor.check(gate_values_tensor, global_step)
+                #     if monitor_stats.get("variance_check_passed") is False:
+                #         logger.warning(
+                #             f"[Step {global_step}] GATE HEALTH WARNING: "
+                #             f"Variance check failed - gates may be collapsing!"
+                #         )
 
                 # Logging (only after optimizer step)
                 if global_step % config.log_every == 0 and global_step > 0:
                     elapsed = time.time() - start_time
                     tokens_per_sec = tokens_seen / elapsed if elapsed > 0 else 0
 
-                    if config.disable_memory:
-                        gate_std_str = "N/A"
-                        gate_mean_str = "N/A"
-                    else:
-                        gate_stats = compute_gate_statistics(torch.tensor(model.get_gate_values()))
-                        gate_std_str = f"{gate_stats['std']:.4f}"
-                        gate_mean_str = f"{gate_stats['mean']:.3f}"
-
                     logger.info(
                         f"[Epoch {epoch + 1}/{config.epochs}] "
                         f"Step {global_step} | "
                         f"Tokens: {tokens_seen / 1e6:.1f}M | "
                         f"LM Loss: {lm_loss_for_log:.4f} | "
-                        f"Polar: {polar_loss_for_log:.4f} | "
                         f"PPL: {math.exp(min(lm_loss_for_log, 20)):.2f} | "
                         f"LR: {scheduler.get_last_lr()[0]:.2e} | "
                         f"GradNorm: {grad_norm:.2f} | "
-                        f"Gate: {gate_mean_str}±{gate_std_str} | "
                         f"Tok/s: {tokens_per_sec:.0f}"
                     )
 
-                # Validation (only after optimizer step)
-                if global_step % config.val_every == 0 and global_step > 0:
-                    val_metrics = run_validation(model, val_loader, config.device)
-                    train_ppl = math.exp(min(lm_loss_for_log, 20))
-                    ppl_gap = val_metrics["ppl"] / train_ppl if train_ppl > 0 else float("inf")
-
-                    # Compute memory contribution (functional PPL probe)
-                    # Committee v6: This replaces brittle unit tests with end-to-end measurement
-                    mem_metrics = compute_memory_contribution(model, val_loader, config.device)
-                    mem_contrib = mem_metrics.get("memory_contribution_pct", 0.0)
-                    mem_sign = "+" if mem_contrib > 0 else ""
-
-                    logger.info(
-                        f"  [Validation] Loss: {val_metrics['loss']:.4f}, "
-                        f"PPL: {val_metrics['ppl']:.2f}, "
-                        f"Train/Val Gap: {ppl_gap:.2f}x, "
-                        f"MemContrib: {mem_sign}{mem_contrib:.1f}%"
-                    )
-
-                    if val_metrics["ppl"] < best_val_ppl:
-                        best_val_ppl = val_metrics["ppl"]
-                        torch.save(
-                            {
-                                "step": global_step,
-                                "tokens_seen": tokens_seen,
-                                "model_state_dict": model.state_dict(),
-                                "optimizer_state_dict": optimizer.state_dict(),
-                                "config": vars(config),
-                                "val_ppl": val_metrics["ppl"],
-                            },
-                            output_dir / "best_model.pt",
-                        )
-                        logger.info(f"  [New best!] Saved checkpoint (PPL: {best_val_ppl:.2f})")
-
-                # Regular checkpoint (only after optimizer step)
+                # Regular checkpoint
                 if global_step % config.save_every == 0 and global_step > 0:
                     torch.save(
                         {
@@ -529,6 +410,7 @@ def train(config: TrainingConfig):
                         },
                         output_dir / f"checkpoint_step{global_step:06d}.pt",
                     )
+                    logger.info(f"  Saved checkpoint: checkpoint_step{global_step:06d}.pt")
 
         # Check max_steps again for epoch break
         if config.max_steps and global_step >= config.max_steps:
@@ -544,18 +426,8 @@ def train(config: TrainingConfig):
                 f"Tokens: {tokens_seen / 1e6:.1f}M"
             )
 
-    # Final validation
     logger.info("=" * 70)
-    final_metrics = run_validation(model, val_loader, config.device)
-    final_mem_metrics = compute_memory_contribution(model, val_loader, config.device)
-    final_mem_contrib = final_mem_metrics.get("memory_contribution_pct", 0.0)
-    final_mem_sign = "+" if final_mem_contrib > 0 else ""
-
-    logger.info(
-        f"Final Validation: Loss={final_metrics['loss']:.4f}, PPL={final_metrics['ppl']:.2f}, "
-        f"MemContrib: {final_mem_sign}{final_mem_contrib:.1f}%"
-    )
-    logger.info(f"Best Validation PPL: {best_val_ppl:.2f}")
+    logger.info("Training complete - run eval_worker.py to evaluate checkpoints")
 
     # Save final model
     torch.save(
@@ -564,8 +436,6 @@ def train(config: TrainingConfig):
             "tokens_seen": tokens_seen,
             "model_state_dict": model.state_dict(),
             "config": vars(config),
-            "final_val_ppl": final_metrics["ppl"],
-            "best_val_ppl": best_val_ppl,
         },
         output_dir / "final_model.pt",
     )
@@ -576,8 +446,6 @@ def train(config: TrainingConfig):
     logger.info(f"Models saved to {output_dir}")
 
     return {
-        "final_ppl": final_metrics["ppl"],
-        "best_ppl": best_val_ppl,
         "total_steps": global_step,
         "tokens_seen": tokens_seen,
     }
@@ -633,12 +501,6 @@ def main():
         default=[],
         help="Subset weights (e.g., 'cosmopedia-v2:0.4 fineweb-edu-dedup:0.5 python-edu-cleaned:0.1')",
     )
-    parser.add_argument(
-        "--val-samples",
-        type=int,
-        default=2000,
-        help="Number of validation samples",
-    )
 
     # Other
     parser.add_argument(
@@ -660,9 +522,6 @@ def main():
         "--poly-degree", type=int, default=2,
         help="Polynomial feature degree for memory (1 for <100M models, 2 for 195M+)",
     )
-    parser.add_argument("--no-polarization", action="store_true", help="Disable gate polarization")
-    parser.add_argument("--memory-dropout", type=float, default=0.20, help="Fraction of steps with memory killed (default: 0.20)")
-    parser.add_argument("--polarization-warmup", type=int, default=2000, help="Steps before polarization activates (default: 2000)")
     parser.add_argument("--ns-iterations", type=int, default=10, help="Newton-Schulz iterations (default: 10)")
     parser.add_argument("--ttl-eta", type=float, default=0.01, help="Inner loop learning rate (default: 0.01)")
     parser.add_argument("--no-ttl-adaptive-eta", action="store_true", help="Disable adaptive eta scaling")
@@ -674,22 +533,11 @@ def main():
         help="Ablation: attention-only (no memory module)",
     )
     parser.add_argument("--log-every", type=int, default=10, help="Log frequency")
-    parser.add_argument("--val-every", type=int, default=200, help="Validation frequency")
     parser.add_argument("--save-every", type=int, default=500, help="Checkpoint frequency")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument(
         "--log-file", type=str, default=None, help="Log file path (default: {output-dir}/train.log)"
     )
-
-    # Memory probe settings
-    parser.add_argument("--no-niah", action="store_true", help="Disable memory probes")
-    parser.add_argument(
-        "--niah-frequency", type=int, default=500, help="Memory probe frequency (steps)"
-    )
-    parser.add_argument(
-        "--niah-haystack", type=int, default=4, help="Number of test sequences for memory probe"
-    )
-    parser.add_argument("--niah-threshold", type=float, default=0.1, help="Min PPL reduction ratio (0.1 = 10%)")
 
     args = parser.parse_args()
 
@@ -714,29 +562,19 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         subsets=args.subsets,
         subset_weights=subset_weights,
-        val_samples=args.val_samples,
         output_dir=args.output_dir,
         tokenizer_path=args.tokenizer,
         device=args.device,
         poly_degree=args.poly_degree,
         poly_rank=args.poly_rank,
-        memory_dropout=args.memory_dropout,
-        polarization_warmup=args.polarization_warmup,
         frozen_m0_ratio=args.frozen_m0_ratio,
         ns_iterations=args.ns_iterations,
         ttl_eta=args.ttl_eta,
         ttl_adaptive_eta=not args.no_ttl_adaptive_eta,
-        use_polarization=not args.no_polarization,
         disable_memory=args.disable_memory,
         log_every=args.log_every,
-        val_every=args.val_every,
         save_every=args.save_every,
         num_workers=args.num_workers,
-        # NIAH probe settings
-        niah_enabled=not args.no_niah,
-        niah_frequency=args.niah_frequency,
-        niah_haystack_size=args.niah_haystack,
-        niah_threshold=args.niah_threshold,
     )
 
     train(config)

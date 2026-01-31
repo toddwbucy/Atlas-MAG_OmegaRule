@@ -17,9 +17,10 @@ Reference:
     - Atlas paper Section 4.2: Muon optimizer discussion
 """
 
+from typing import TYPE_CHECKING
+
 import torch
 from torch import Tensor
-from typing import TYPE_CHECKING
 
 from src.nn.newton_schulz import newton_schulz
 

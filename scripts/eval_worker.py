@@ -36,7 +36,7 @@ from src.data.smollm_dataset import create_smollm_val_dataloader
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
 from src.training.niah_probe import NIAHProbe
-from src.training.polarization import compute_gate_statistics
+# DEADCODE: from src.training.polarization import compute_gate_statistics
 from src.training.validation import run_validation
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,6 @@ def _build_model_from_config(config: dict, device: str) -> AtlasMAGSkeleton:
         disable_memory=config.get("disable_memory", False),
         poly_degree=config.get("poly_degree", 2),
         poly_rank=config.get("poly_rank", 0),
-        memory_dropout_rate=0.0,  # No dropout during assessment
         ttl_eta=config.get("ttl_eta", 0.01),
         ttl_ns_iters=config.get("ns_iterations", 10),
         ttl_adaptive_eta=config.get("ttl_adaptive_eta", True),
@@ -178,13 +177,15 @@ def run_worker_loop(args):
                         niah.set_eval_batch(probe_batch)
                         niah_result = niah.run_probe(model, step or 0, args.device)
 
-                # Gate statistics
-                gate_stats = {}
-                if not config.get("disable_memory", False):
-                    gate_values = model.get_gate_values()
-                    gate_stats = compute_gate_statistics(torch.tensor(gate_values))
-                    gate_stats = {k: float(v) if hasattr(v, 'item') else v for k, v in gate_stats.items()}
-                    gate_stats["per_layer"] = gate_values
+                # DEADCODE: Gate statistics meaningless for MAGBlock (no explicit gates)
+                # MAGBlock uses element-wise gating via sigmoid(mem_out), not learnable gates
+                # gate_stats = {}
+                # if not config.get("disable_memory", False):
+                #     gate_values = model.get_gate_values()
+                #     gate_stats = compute_gate_statistics(torch.tensor(gate_values))
+                #     gate_stats = {k: float(v) if hasattr(v, 'item') else v for k, v in gate_stats.items()}
+                #     gate_stats["per_layer"] = gate_values
+                gate_stats = {}  # Empty - MAGBlock has no explicit gates
 
                 # Build result entry
                 result_entry = {
