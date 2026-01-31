@@ -1,21 +1,26 @@
-"""Atlas-MAG model components with Omega Rule."""
+"""Atlas-MAG Model Components."""
 
-from src.model.atlas_memory import AtlasMemory, AtlasMemoryPoly
+from src.model.skeleton import AtlasMAGSkeleton
+from src.model.blocks import MAGBlock, AttentionOnlyBlock, GammaGate
+from src.model.atlas_memory import AtlasMemoryPoly
+from src.model.qk_projection import CausalQKMemoryProjection
+from src.model.projections import QKVProjection, RotaryEmbedding
 from src.model.persistent_memory import (
-    PersistentMemory,
     compute_m_persistent,
     compute_norm_persistent,
+    PersistentMemory,
 )
-from src.model.projections import QKVProjection, CausalConv1d
-from src.model.skeleton import AtlasMAGSkeleton
 
 __all__ = [
     "AtlasMAGSkeleton",
-    "AtlasMemory",
+    "MAGBlock",
+    "AttentionOnlyBlock",
+    "GammaGate",
     "AtlasMemoryPoly",
-    "CausalConv1d",
-    "PersistentMemory",
+    "CausalQKMemoryProjection",
     "QKVProjection",
+    "RotaryEmbedding",
     "compute_m_persistent",
     "compute_norm_persistent",
+    "PersistentMemory",
 ]

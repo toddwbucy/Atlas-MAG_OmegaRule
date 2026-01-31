@@ -41,13 +41,13 @@ from torch.optim import AdamW
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src_clean.data.smollm_dataset import create_smollm_dataloader
-from src_clean.data.tokenizer import load_tokenizer
-from src_clean.model.skeleton import AtlasMAGSkeleton
+from src.data.smollm_dataset import create_smollm_dataloader
+from src.data.tokenizer import load_tokenizer
+from src.model.skeleton import AtlasMAGSkeleton
 # DEADCODE: MAGBlock has no explicit gate params, these produce meaningless output
-# from src_clean.training.gate_monitor import GateMonitor
-# from src_clean.training.polarization import compute_gate_statistics
-from src_clean.utils.logging import get_logger, setup_logging
+# from src.training.gate_monitor import GateMonitor
+# from src.training.polarization import compute_gate_statistics
+from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
 logger = get_logger(__name__)

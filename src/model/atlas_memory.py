@@ -1,17 +1,19 @@
 """
-Atlas Memory Module: Gated MLP for Test-Time Memorization.
+Atlas Memory Module: Gated MLP with Polynomial Features for Test-Time Memorization.
 
 The Atlas memory learns to store and retrieve information through a
-gated MLP architecture. Unlike attention, it can update its internal
-state at inference time, enabling true test-time learning.
+gated MLP architecture with polynomial feature expansion. Unlike attention,
+it can update its internal state at inference time, enabling true test-time learning.
 
 Architecture:
-    M(x) = x + W1 · (σ(W2·x) ⊙ W3·x)
+    1. Project input to key_dim for polynomial expansion
+    2. Apply polynomial features: [x, x_i*x_j] for O(d_k²) capacity
+    3. Gated MLP: W1 · (σ(W2·φ(x)) ⊙ W3·φ(x))
+    4. Project back to full dimension
 
-Where:
-    - σ is SiLU (Swish) activation
-    - ⊙ is element-wise multiplication (gating)
-    - The residual connection enables additive updates
+Memory capacity (Atlas Propositions 1 & 2):
+    - Without φ: O(d_k) ≈ 64 associations
+    - With φ_2: O(d_k²) ≈ 4,096 associations
 
 Reference: Atlas paper (arXiv:2505.23735)
 """
@@ -23,92 +25,6 @@ from torch import Tensor
 
 from typing import cast
 from src.config import MEMORY_EXPANSION, POLY_DEGREE, POLY_RANK
-
-
-class AtlasMemory(nn.Module):
-    """
-    Atlas++ Memory: Gated MLP with residual connection.
-
-    This is the core memory module that enables test-time learning.
-    The gating mechanism controls what information gets stored.
-
-    Args:
-        dim: Model dimension
-        expansion: Hidden dimension multiplier (default: 4)
-        bias: Whether to use bias in linear layers (default: False)
-
-    Shape:
-        - Input: (batch, seq_len, dim)
-        - Output: (batch, seq_len, dim)
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        expansion: int = MEMORY_EXPANSION,
-        bias: bool = False,
-    ):
-        """
-        Initialize Atlas memory module.
-
-        Args:
-            dim: Model dimension
-            expansion: Hidden dimension multiplier for the gated MLP
-            bias: Whether to use bias in linear layers
-        """
-        super().__init__()
-        self.dim = dim
-        self.hidden_dim = dim * expansion
-
-        # Gate projection (SiLU applied)
-        self.w1 = nn.Linear(self.hidden_dim, dim, bias=bias)
-        # Up projection for gate
-        self.w2 = nn.Linear(dim, self.hidden_dim, bias=bias)
-        # Up projection for value
-        self.w3 = nn.Linear(dim, self.hidden_dim, bias=bias)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights with small values for stable start."""
-        for module in [self.w1, self.w2, self.w3]:
-            nn.init.normal_(module.weight, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-
-    def forward(self, x: Tensor, return_contribution: bool = False) -> Tensor:
-        """
-        Apply gated memory update.
-
-        Args:
-            x: Input tensor of shape (batch, seq_len, dim)
-            return_contribution: If True, return only the memory contribution
-                without the residual connection. Used for output-level
-                combination where the caller handles the residual.
-
-        Returns:
-            If return_contribution=False: x + memory_contribution (default)
-            If return_contribution=True: memory_contribution only
-        """
-        # Gate: σ(W2·x)
-        gate = F.silu(self.w2(x))
-        # Value: W3·x
-        value = self.w3(x)
-        # Gated value: gate ⊙ value
-        gated = gate * value
-        # Memory contribution: W1·(gate ⊙ value)
-        contribution: Tensor = self.w1(gated)
-
-        if return_contribution:
-            return contribution
-
-        # Default: add residual for standalone use
-        out: Tensor = x + contribution
-        return out
-
-    def extra_repr(self) -> str:
-        """Return a string with extra module information for repr()."""
-        return f"dim={self.dim}, hidden_dim={self.hidden_dim}"
 
 
 class AtlasMemoryPoly(nn.Module):
@@ -334,7 +250,7 @@ class AtlasMemoryPoly(nn.Module):
             x_mlp_in = self.poly_compress(x_poly)
 
         # Gate and value use (compressed) polynomial features
-        gate = F.silu(self.w2(x_mlp_in))
+        gate = F.gelu(self.w2(x_mlp_in))
         value = self.w3(x_mlp_in)
         gated = gate * value
 

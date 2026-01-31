@@ -22,7 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src_clean.config import (
+from src.config import (
     GAMMA_GATE_HIDDEN_DIM,
     MEMORY_EXPANSION,
     OMEGA_CONTEXT_WINDOW,
@@ -31,13 +31,13 @@ from src_clean.config import (
     WINDOW_SIZE,
 )
 
-from src_clean.model.atlas_memory import AtlasMemoryPoly
-from src_clean.model.projections import QKVProjection, RotaryEmbedding
-from src_clean.model.qk_projection import CausalQKMemoryProjection
-from src_clean.nn.rmsnorm import RMSNorm
-from src_clean.nn.swiglu import SwiGLU
-from src_clean.training.omega_loss import compute_omega_loss
-from src_clean.training.ttl_update import ttl_step
+from src.model.atlas_memory import AtlasMemoryPoly
+from src.model.projections import QKVProjection, RotaryEmbedding
+from src.model.qk_projection import CausalQKMemoryProjection
+from src.nn.rmsnorm import RMSNorm
+from src.nn.swiglu import SwiGLU
+from src.training.omega_loss import compute_omega_loss
+from src.training.ttl_update import ttl_step
 
 logger = logging.getLogger(__name__)
 

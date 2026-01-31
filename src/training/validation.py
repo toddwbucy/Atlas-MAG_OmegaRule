@@ -135,6 +135,21 @@ def compute_memory_contribution(
     ppl_with_memory = math.exp(min(avg_loss_mem, 20))
 
     # === PPL with memory disabled ===
+    # Check if blocks support disable_memory attribute
+    # AtlasMAGBlock (legacy) has it, MAGBlock/MALBlock don't
+    supports_disable = all(hasattr(block, "disable_memory") for block in model.blocks)
+
+    if not supports_disable:
+        # For MAG/MAL architectures, memory can't be disabled (it's architecturally integrated)
+        # Return the with-memory PPL and note that comparison isn't possible
+        model.train(model_was_training)
+        return {
+            "ppl_with_memory": ppl_with_memory,
+            "ppl_without_memory": ppl_with_memory,  # Same as with, since we can't disable
+            "memory_contribution_pct": 0.0,
+            "note": "Memory contribution comparison not available for MAG/MAL architectures",
+        }
+
     # Save original disable_memory flags
     orig_flags = [block.disable_memory for block in model.blocks]
 
