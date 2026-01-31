@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from src.config import D, N_PERSISTENT
+from src.config import N_PERSISTENT, D
 
 logger = logging.getLogger(__name__)
 

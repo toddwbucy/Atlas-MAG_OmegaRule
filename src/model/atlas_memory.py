@@ -18,12 +18,13 @@ Memory capacity (Atlas Propositions 1 & 2):
 Reference: Atlas paper (arXiv:2505.23735)
 """
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from typing import cast
 from src.config import MEMORY_EXPANSION, POLY_DEGREE, POLY_RANK
 
 

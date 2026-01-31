@@ -12,10 +12,10 @@ import torch
 import torch.nn as nn
 
 from src.model.atlas_memory import AtlasMemoryPoly
-from src.model.skeleton import AtlasMAGSkeleton
 from src.model.blocks import MAGBlock as AtlasMAGBlock
+from src.model.skeleton import AtlasMAGSkeleton
 from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
-from src.training.ttl_update import ttl_step, ttl_step_with_grad_clip, TTLUpdater
+from src.training.ttl_update import TTLUpdater, ttl_step, ttl_step_with_grad_clip
 
 
 class TestOmegaLoss:

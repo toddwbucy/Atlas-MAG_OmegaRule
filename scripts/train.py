@@ -282,6 +282,7 @@ def train(config: TrainingConfig):
     # For accumulating losses across micro-batches
     accum_lm_loss = 0.0
     accum_tokens = 0
+    is_frozen_step = False  # Tracks frozen M0 state for current accumulation window
 
     for epoch in range(config.epochs):
         epoch_loss = 0.0
@@ -298,11 +299,14 @@ def train(config: TrainingConfig):
             # Frozen M0: occasionally freeze static memory weights so only TTL can reduce loss
             # NOTE: We disable TTL on frozen steps because freeze_static_weights()
             # sets requires_grad=False, which breaks torch.autograd.grad() in ttl_step.
-            is_frozen_step = (
-                config.frozen_m0_ratio > 0
-                and not config.disable_memory
-                and torch.rand(1).item() < config.frozen_m0_ratio
-            )
+            # IMPORTANT: Decision is made once per accumulation window (not per micro-batch)
+            # to ensure consistent gradient computation across all micro-batches.
+            if micro_step % accum_steps == 0:
+                is_frozen_step = (
+                    config.frozen_m0_ratio > 0
+                    and not config.disable_memory
+                    and torch.rand(1).item() < config.frozen_m0_ratio
+                )
             if is_frozen_step:
                 for block in model.blocks:
                     block.memory.freeze_static_weights()

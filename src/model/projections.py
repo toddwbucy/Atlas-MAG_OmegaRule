@@ -9,12 +9,13 @@ Reference: Atlas paper (arXiv:2505.23735)
 
 import math
 from typing import Union, cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.config import D, N_HEADS, HEAD_DIM
+from src.config import HEAD_DIM, N_HEADS, D
 from src.nn.rmsnorm import RMSNorm
 
 

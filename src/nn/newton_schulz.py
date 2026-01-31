@@ -13,7 +13,6 @@ Reference: Muon optimizer (https://github.com/KellerJordan/Muon)
 import torch
 from torch import Tensor
 
-
 # Optimal coefficients for Newton-Schulz iteration
 # These values give cubic convergence for the matrix sign function iteration
 _NS_A: float = 3.4445

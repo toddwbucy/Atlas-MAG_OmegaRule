@@ -16,7 +16,7 @@ Reference: Atlas paper (arXiv:2505.23735) Eq. 9 - Omega Rule
 """
 
 import logging
-from typing import Optional, Any
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn

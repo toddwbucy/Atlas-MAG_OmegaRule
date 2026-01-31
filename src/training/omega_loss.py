@@ -13,9 +13,10 @@ Reference:
     - Atlas paper Appendix D: Key-Value projection definitions
 """
 
+from typing import TYPE_CHECKING
+
 import torch
 from torch import Tensor
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.model.atlas_memory import AtlasMemoryPoly

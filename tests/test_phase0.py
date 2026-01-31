@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import N_PERSISTENT, D
 from src.model.atlas_memory import AtlasMemoryPoly
+from src.model.blocks import MAGBlock
 from src.model.persistent_memory import (
     PersistentMemory,
     compute_m_persistent,
@@ -27,7 +28,6 @@ from src.model.persistent_memory import (
 )
 from src.model.projections import QKVProjection, RotaryEmbedding
 from src.model.skeleton import AtlasMAGSkeleton
-from src.model.blocks import MAGBlock
 
 
 class TestMPersistent:
@@ -208,8 +208,9 @@ class TestSlidingWindowAttention:
     def test_block_uses_sliding_window(self):
         """Block should use sliding window attention."""
         block = MAGBlock(dim=D, n_heads=8)
-        # Block should have window_size attribute or use config
-        assert hasattr(block, 'attn_window_size') or True  # May be in config
+        # Block should have window_size attribute
+        assert hasattr(block, 'attn_window_size')
+        assert block.attn_window_size > 0
 
 
 class TestGPUCompatibility:

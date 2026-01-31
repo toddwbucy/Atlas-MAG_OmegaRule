@@ -30,7 +30,6 @@ from src.config import (
     POLY_DEGREE,
     WINDOW_SIZE,
 )
-
 from src.model.atlas_memory import AtlasMemoryPoly
 from src.model.projections import QKVProjection, RotaryEmbedding
 from src.model.qk_projection import CausalQKMemoryProjection

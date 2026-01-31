@@ -31,8 +31,7 @@ from src.config import (
     VOCAB_SIZE,
     D,
 )
-
-from src.model.blocks import MAGBlock, AttentionOnlyBlock
+from src.model.blocks import AttentionOnlyBlock, MAGBlock
 from src.nn.rmsnorm import RMSNorm
 
 logger = logging.getLogger(__name__)
@@ -75,7 +74,7 @@ class AtlasMAGSkeleton(nn.Module):
         ttl_ns_iters: int = 5,
         ttl_adaptive_eta: bool = False,
         # Legacy parameter - ignored, kept for checkpoint compatibility
-        layer_pattern: str = "mag",
+        layer_pattern: str = "mag",  # noqa: ARG002
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -90,7 +89,7 @@ class AtlasMAGSkeleton(nn.Module):
 
         # Build MAG blocks (or AttentionOnly for ablation)
         self.blocks = nn.ModuleList()
-        for layer_idx in range(n_layers):
+        for _ in range(n_layers):
             if disable_memory:
                 self.blocks.append(
                     AttentionOnlyBlock(

@@ -9,10 +9,10 @@ These tests verify the tokenizer meets our requirements:
 - Low unknown token rate
 """
 
-import pytest
-from pathlib import Path
-import tempfile
 import sys
+from pathlib import Path
+
+import pytest
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))

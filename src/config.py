@@ -10,7 +10,6 @@ Reference: Atlas paper (arXiv:2505.23735)
 from dataclasses import dataclass
 from typing import Tuple
 
-
 # =============================================================================
 # Architecture Constants
 # =============================================================================

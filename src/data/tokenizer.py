@@ -14,13 +14,14 @@ from typing import List, Union
 
 from torch import Tensor
 
-from src.config import VOCAB_SIZE, SPECIAL_TOKENS
+from src.config import SPECIAL_TOKENS, VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 
 # Attempt to import tokenizers - it's a required dependency
 try:
-    from tokenizers import Tokenizer, models, trainers, pre_tokenizers, processors
+    import tokenizers.decoders
+    from tokenizers import Tokenizer, models, pre_tokenizers, processors, trainers
     from tokenizers.normalizers import NFKC
     HAS_TOKENIZERS = True
 except ImportError:
@@ -226,8 +227,3 @@ def load_tokenizer(path: Union[str, Path]) -> BPETokenizer:
         BPETokenizer instance
     """
     return BPETokenizer(path)
-
-
-# Import for decoder
-if HAS_TOKENIZERS:
-    import tokenizers.decoders
