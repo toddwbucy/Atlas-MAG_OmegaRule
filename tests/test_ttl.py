@@ -441,7 +441,7 @@ class TestTTLInForwardPass:
         assert len(ttl_stats_list) == 2
 
     def test_ttl_training_vs_inference_mode(self):
-        """TTL should work in both train and inference modes (core Atlas innovation)."""
+        """TTL updates in train mode but is disabled in inference mode."""
         model = AtlasMAGSkeleton(
             vocab_size=1000,
             dim=128,
