@@ -55,9 +55,11 @@ def generate(model, tokenizer, prompt: str, max_tokens: int = 100,
 
         next_token_logits = logits[0, -1, :] / temperature
 
-        # Top-k filtering
-        if top_k > 0:
-            indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][-1]
+        # Top-k filtering (clamp to vocab size to avoid torch.topk error)
+        vocab_size = next_token_logits.size(-1)
+        effective_k = min(top_k, vocab_size) if top_k > 0 else 0
+        if effective_k > 0:
+            indices_to_remove = next_token_logits < torch.topk(next_token_logits, effective_k)[0][-1]
             next_token_logits[indices_to_remove] = float('-inf')
 
         # Sample

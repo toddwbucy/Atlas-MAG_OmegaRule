@@ -6,7 +6,7 @@ from src_clean.training.validation import run_validation
 from src_clean.training.niah_probe import NIAHProbe, NIAHResult
 from src_clean.training.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
 
-__all__ = [
+__all__ = [  # noqa: RUF022 - grouped by feature on purpose
     # Omega Loss
     "compute_omega_loss",
     "compute_omega_loss_with_stats",

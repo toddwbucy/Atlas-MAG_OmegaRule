@@ -111,10 +111,10 @@ def orthogonality_error(X: Tensor) -> float:
         XXT = torch.bmm(X, X.transpose(-2, -1))
         m = X.shape[1]
 
-    I = torch.eye(m, device=X.device, dtype=X.dtype)
+    identity = torch.eye(m, device=X.device, dtype=X.dtype)
     if XXT.ndim == 3:
-        I = I.unsqueeze(0).expand_as(XXT)
+        identity = identity.unsqueeze(0).expand_as(XXT)
 
-    error = torch.linalg.norm(XXT - I) / (m ** 0.5)
+    error = torch.linalg.norm(XXT - identity) / (m ** 0.5)
     error_val: float = error.item() if error.ndim == 0 else float(error.mean().item())
     return error_val

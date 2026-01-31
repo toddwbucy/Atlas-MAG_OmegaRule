@@ -237,6 +237,8 @@ def train(config: TrainingConfig):
         # We need both IDs (for filtering) and the params themselves (for zeroing grads)
         memory_param_ids: set[int] = set()
         for block in model.blocks:
+            if not hasattr(block, "memory"):
+                continue  # Skip attention-only blocks
             for p in block.memory.parameters():
                 memory_param_ids.add(id(p))
                 memory_params.append(p)

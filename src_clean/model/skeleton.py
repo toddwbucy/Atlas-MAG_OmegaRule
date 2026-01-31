@@ -238,7 +238,11 @@ class AtlasMAGSkeleton(nn.Module):
             if hasattr(mem, "poly_compress") and mem.poly_compress is not None:
                 memory_states.append(mem.poly_compress.weight.flatten())
 
-        memory_state = torch.cat(memory_states) if memory_states else torch.zeros(1)
+        if memory_states:
+            memory_state = torch.cat(memory_states)
+        else:
+            # Fallback: match device/dtype of logits to avoid downstream mismatches
+            memory_state = torch.zeros(1, device=logits.device, dtype=logits.dtype)
         return logits, memory_state
 
     def get_gate_values(self) -> list[float]:
