@@ -1,13 +1,45 @@
 """
-Newton-Schulz Orthogonalization for the Muon Optimizer.
+Newton-Schulz Orthogonalization for the Muon/Atlas Optimizer.
 
-The Muon optimizer uses Newton-Schulz iteration to orthogonalize gradients
-before applying updates. This improves conditioning and training stability.
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Table 1 (Atlas memory update rule)
 
-The iteration computes the orthogonalized matrix (G @ G^T)^(-1/2) @ G,
-which is the orthogonal part of the polar decomposition.
+Context in Atlas:
+    The Atlas memory update rule (Table 1) uses Newton-Schulz orthogonalization
+    as part of its "Muon" optimizer variant:
 
-Reference: Muon optimizer (https://github.com/KellerJordan/Muon)
+        M_t = α_t * M_{t-1} - η_t * NS-5(S_t)
+        S_t = θ_t * S_{t-1} - ∇ℓ(M_{t-1}; k_t, v_t)
+
+    Where NS-5 denotes Newton-Schulz iteration with 5 iterations.
+
+Mathematical Foundation:
+    Newton-Schulz iteration computes the orthogonal factor of the polar
+    decomposition: (G @ G^T)^(-1/2) @ G
+
+    For an input matrix G, this produces X such that X @ X^T ≈ I.
+
+    The iteration is:
+        X_{k+1} = a*X_k + (b*A + c*A^2) @ X_k
+        where A = X_k @ X_k^T
+
+    With optimal coefficients (a=3.4445, b=-4.7750, c=2.0315), this achieves
+    cubic convergence for matrices with singular values in (0, 1].
+
+Why Orthogonalization Matters:
+    - Prevents magnitude explosion from accumulated momentum in TTL
+    - Keeps updates on the Stiefel manifold (orthogonal matrices)
+    - Provides implicit regularization without explicit weight decay
+    - Improves conditioning of the optimization landscape
+
+    The paper notes that using "more powerful memory management and learning
+    rules in associative memories" (Section 2) improves long-context reasoning.
+
+Implementation Notes:
+    - K=5 iterations is the default (matching "NS-5" in the paper)
+    - Input is normalized to ensure top singular value ≤ 1 (convergence requirement)
+    - Supports batched operation for 3D tensors
 """
 
 import torch

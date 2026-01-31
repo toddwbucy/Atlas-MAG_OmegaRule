@@ -1,18 +1,41 @@
 """
-Q-K Projection with proper normalization for memory retrieval.
+Causal Q-K Memory Projection implementing the Omega Rule.
 
-REQ-P2-001: Q-K Projection with Normalization
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Section 3.2 "Omega Rule"
 
-Key equations (Omega Rule from Atlas paper Eq. 9):
-    M_t = M_persistent + Σ(i=t-c+1 to t) γ_i^(t) * (k_i ⊗ k_i)
-    norm_sum = norm_persistent + Σ(i=t-c+1 to t) γ_i^(t) * ||k_i||²
-    q'_t = M_t @ q_t / norm_sum
+Mathematical Formulation (Equation 9):
+    The Omega Rule optimizes memory over a sliding context window of c tokens,
+    rather than the online (Delta) rule which only considers the current token:
 
-Where:
-    c = context window size (OMEGA_CONTEXT_WINDOW)
-    γ_i^(t) = decay_base^(t-i) gives exponential decay for older tokens
+        ℓ_Omega(M; t) = Σ(i=t-c+1 to t) γ_i^(t) * ||M(k_i) - v_i||²
 
-Reference: Atlas paper (arXiv:2505.23735) Eq. 9 - Omega Rule
+    For our implementation with outer-product memory:
+        M_t = M_persistent + Σ(i=t-c+1 to t) γ_i^(t) * (k_i ⊗ k_i)
+        norm_sum = norm_persistent + Σ(i=t-c+1 to t) γ_i^(t) * ||k_i||²
+        q'_t = M_t @ q_t / norm_sum
+
+    Where:
+        c = context window size (OMEGA_CONTEXT_WINDOW, default 256)
+        γ_i^(t) = decay_base^(t-i) gives exponential decay for older tokens
+        M_persistent = precomputed stable memory from learned persistent keys
+
+Paper Context:
+    The Omega Rule is "strictly more powerful than the popular Delta learning
+    rule" (Section 3.2). It provides:
+    - Context-aware memory: memorizes context rather than individual tokens
+    - Direct hard gating: γ parameters allow in-context pruning
+    - Sliding window efficiency: constant gates per token (not O(seq_len))
+
+    Extreme cases:
+    - c=1: reduces to online Delta rule (like Titans)
+    - c=∞: global optimization over all past tokens
+
+Implementation Notes:
+    - forward_chunked(): Parallel implementation avoiding O(seq_len) Python loop
+    - Uses algebraic identity to avoid materializing dim×dim matrix M_t
+    - Supports input-dependent gamma gates for learned context pruning
 """
 
 import logging

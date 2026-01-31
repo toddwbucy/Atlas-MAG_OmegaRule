@@ -1,20 +1,43 @@
 """
-Atlas-MAG Skeleton Model with Polynomial Memory.
+Atlas-MAG Skeleton: Full Model Assembly.
 
-This implements the Atlas MAG architecture from arXiv:2505.23735.
-MAG (Memory-as-Gate) is the best performing variant according to paper ablations.
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735
 
-Key features from Atlas paper:
-- MAG architecture: Parallel attention+memory branches with gated combination
-- Polynomial features (phi_2): Essential for memory capacity O(d_k^2)
-- Input-dependent gamma gates: Per-position decay modulation
-- Sliding window attention: Memory captures beyond-window context
+Model Overview:
+    Atlas is a hybrid architecture combining:
+    1. Sliding Window Attention (SWA) for local context
+    2. Deep Neural Memory for long-range associations
+    3. MAG (Memory-as-Gate) combination strategy
 
-Memory capacity (Section 3.1, Propositions 1 & 2):
-- Without polynomial features: O(d_k) ~ 64 associations
-- With phi_2 polynomial features: O(d_k^2) ~ 4,096 associations
+    The paper shows Atlas outperforms pure attention (Transformers), pure
+    recurrence (Mamba, GLA), and other hybrid architectures on language
+    modeling, commonsense reasoning, and needle-in-haystack tasks.
 
-Reference: Atlas paper (arXiv:2505.23735)
+Architecture (Section 4 "DeepTransformers"):
+    Input → Embedding → [MAGBlock × N] → RMSNorm → LM Head → Output
+
+    Each MAGBlock contains:
+    - Sliding Window Attention (local context, parallelizable)
+    - Deep Polynomial Memory (long-range, parametric)
+    - Element-wise gating: output = x + attn * sigmoid(mem)
+
+Key Components from Paper:
+    - MAG architecture (Section 5.1): "Memory-as-Gate" where memory output
+      gates the attention output element-wise
+    - Polynomial features φ_2 (Section 3.1): Increases memory capacity from
+      O(d_k) to O(d_k²) - "essential" per ablations
+    - Omega Rule (Section 3.2): Context-aware memory update over sliding window
+    - Input-dependent γ gates: Per-position decay for context pruning
+
+Memory Capacity (Propositions 1 & 2):
+    - Without φ: O(d_k) ≈ 64 associations per layer
+    - With φ_2: O(d_k²) ≈ 4,096 associations per layer
+
+Ablation Results (Table 3):
+    The paper shows that removing any of these components significantly
+    hurts performance: polynomial mapping, Muon optimizer, attention branch.
 """
 
 import logging

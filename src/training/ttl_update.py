@@ -1,20 +1,45 @@
 """
 Test-Time Learning (TTL) Update Step.
 
-Implements the memory update rule from the Atlas paper (arXiv:2505.23735):
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Section 3.2 "Beyond Gradient Descent"
 
+Conceptual Framework:
+    Atlas is a "meta in-context learner with two optimization levels":
+
+    1. Inner Loop (TTL): Memory module parameters are optimized at test time
+       using gradient descent with momentum on the Omega loss. This allows
+       the model to "memorize the (token) context at test time."
+
+    2. Outer Loop: Core model parameters (embeddings, attention, etc.) are
+       optimized during training via standard backpropagation.
+
+    The paper uses "Test Time Memorization" terminology because "the process
+    involves storing and retrieving information strictly within the global
+    context, without updating the model's core learned parameters."
+
+Mathematical Formulation:
     Momentum accumulation (Eq. 33):
-        S_t = theta * S_{t-1} + grad(L_omega)
+        S_t = θ * S_{t-1} + ∇ℓ(M_{t-1}; k_t, v_t)
 
-    Memory update (Eq. 32):
-        M_t = alpha * M_{t-1} - eta * NewtonSchulz(S_t)
+    Memory update with Muon optimizer (Table 1, Atlas row):
+        M_t = α_t * M_{t-1} - η_t * NS-5(S_t)
 
-The Newton-Schulz orthogonalization (Muon optimizer) keeps updates on the
-Stiefel manifold, preventing magnitude explosion from accumulated momentum.
+    Where:
+        θ (theta) = momentum decay factor (default: 0.9)
+        α (alpha) = weight decay factor (default: 0.999)
+        η (eta) = learning rate (default: 0.01)
+        NS-5 = Newton-Schulz orthogonalization with 5 iterations
 
-Reference:
-    - Atlas paper Eq. 32-33: Update rules
-    - Atlas paper Section 4.2: Muon optimizer discussion
+    The Newton-Schulz step keeps updates on the Stiefel manifold, preventing
+    magnitude explosion from accumulated momentum (Muon optimizer insight).
+
+Implementation Notes:
+    - Gradients computed via torch.autograd.grad() for surgical memory updates
+    - Newton-Schulz only applied to 2D+ tensors (skip bias terms)
+    - Momentum stored in registered buffers for persistence across steps
+    - adaptive_eta option scales learning rate by 1/(1 + grad_norm)
 """
 
 from typing import TYPE_CHECKING

@@ -1,17 +1,45 @@
 """
-MAG Block Implementation (Titans/Atlas Architecture).
+MAG Block Implementation (Memory-Augmented Generation).
 
-This module implements the Memory-as-Gate (MAG) hybrid layer from the Titans paper
-(Behrouz, Zhong et al. 2024), as used in Atlas (arXiv:2505.23735):
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Section 4 "DeepTransformers" and Section 5.1
+
+    Also references:
+    Titans: Learning to Memorize at Test Time
+    arXiv:2501.00663 (Behrouz, Zhong et al. 2024)
+
+Architecture Overview:
+    Atlas combines "Memory-Augmented Generation" (MAG) from Titans with the
+    Omega Rule memory update. The key insight from Section 4:
+
+    "Not only attention is a non-parametric solution (contrary to the parametric
+    nature of recurrent models), it globally optimizes its internal objective,
+    while most recent modern recurrent models are online learners."
+
+    MAG addresses this by running attention and memory in parallel, using the
+    memory output to gate/modulate the attention output.
 
 MAG (Memory as Gate):
-    - Parallel branches: attention and memory run independently
-    - Output: x + attn_out * sigmoid(mem_out)  (element-wise gating)
-    - Memory gates/modulates the attention output
+    Two parallel branches combined via element-wise gating:
+    - Branch 1: Sliding Window Attention → attn_out
+    - Branch 2: Deep Memory (with Omega Rule) → mem_out
+    - Output: x + attn_out * sigmoid(mem_out)
 
-Reference:
-    - Titans paper (arXiv:2501.00663)
-    - Atlas paper (arXiv:2505.23735) Section 5.1
+    The memory gates the attention, allowing the model to selectively suppress
+    or enhance attention based on memory retrieval. This provides the benefits
+    of both local attention (efficient, parallelizable) and long-range memory
+    (associative retrieval beyond the attention window).
+
+Components:
+    - SlidingWindowAttention: Local context via masked attention (Section 4.1)
+    - AtlasMemoryPoly: Deep polynomial memory (Section 3.1)
+    - CausalQKMemoryProjection: Omega Rule Q-K projection (Section 3.2)
+    - GammaGate: Input-dependent decay gates for context pruning
+
+Test-Time Learning:
+    MAGBlock supports TTL (inner loop optimization) where memory parameters
+    are updated based on Omega loss during forward pass.
 """
 
 import logging
@@ -56,7 +84,23 @@ def create_sliding_window_mask(seq_len: int, window_size: int, device: torch.dev
 
 
 class GammaGate(nn.Module):
-    """Input-dependent gamma gate for Omega Rule context pruning."""
+    """
+    Input-dependent gamma gate for Omega Rule context pruning.
+
+    Paper Reference:
+        Atlas paper Section 3.2: "In our design, we use input-dependent parameters
+        for γ_i^(t), providing in-context pruning ability."
+
+    The γ (gamma) parameters act as "hard (direct) gates for the past tokens":
+        - γ_i → 0: prunes token i from the local context optimization
+        - γ_i → 1: fully incorporates token i in memory optimization
+
+    This allows the model to learn which past tokens are relevant for the
+    current prediction, enabling adaptive context pruning within the sliding
+    window. The paper notes this is efficient because "for each token we need
+    a constant number of gates; i.e., {γ_i^(t)}_{i=1}^c" where c is the
+    context window size.
+    """
 
     def __init__(self, dim: int, hidden_dim: int = GAMMA_GATE_HIDDEN_DIM):
         super().__init__()

@@ -1,17 +1,36 @@
 """
-Persistent Memory: M_persistent, norm_persistent, and W_init computation.
+Persistent Memory: Stable Background Memory for the Omega Rule.
 
-These are the foundation primitives that all subsequent phases depend on.
-They are computed once at startup and shared across all shards.
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735
 
-Phase 0 Requirements:
-    - P0-T1: W_init via steady-state calibration
-    - P0-T2: M_persistent from 64 persistent keys
-    - P0-T3: norm_persistent scalar
-    - P0-T4: Hash verification for multi-GPU consistency
+Conceptual Role:
+    In the Omega Rule memory update (Equation 9), M_t accumulates key-key outer
+    products over a sliding context window. However, at the start of each
+    sequence (or when the context window is empty), M_t would be zero, leading
+    to unstable Q-K projections.
 
-Reference: Atlas paper (arXiv:2505.23735)
-Note: TNT hierarchical memory is NOT implemented; only Atlas-MAG with Omega Rule.
+    M_persistent provides a stable "background" memory that:
+    1. Ensures non-zero denominator in Q-K projection normalization
+    2. Provides a learnable prior over key-value associations
+    3. Does not reset at sequence/shard boundaries
+
+Mathematical Formulation:
+    Given N_persistent learned keys k_p ∈ R^d:
+
+        M_persistent = Σ(p=1 to N) k_p ⊗ k_p^T    (outer product sum)
+        norm_persistent = Σ(p=1 to N) ||k_p||²    (sum of squared norms)
+
+    The Omega Rule Q-K projection becomes:
+        M_t = M_persistent + Σ(i=t-c+1 to t) γ_i * (k_i ⊗ k_i)
+        q'_t = M_t @ q_t / (norm_persistent + Σ γ_i * ||k_i||²)
+
+Implementation Notes:
+    - N_PERSISTENT defaults to 64 (same as head_dim for capacity alignment)
+    - Keys are learned parameters, initialized with small random values
+    - M_persistent is symmetric positive semi-definite (sum of outer products)
+    - Computed once at model initialization, not updated during training
 """
 
 import hashlib

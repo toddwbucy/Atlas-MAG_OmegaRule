@@ -1,16 +1,40 @@
 """
 Omega Rule Loss for Test-Time Learning (TTL).
 
-Implements Equation 9 from the Atlas paper (arXiv:2505.23735):
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Section 3.2 "Omega Rule"
 
-    L_omega = sum(i=t-c+1 to t) gamma_i^(t) * ||M(phi(k_i)) - v_i||^2
+Mathematical Formulation (Equation 9):
+    The Omega Rule defines a sliding-window optimization objective:
 
-The memory M learns to map keys to values over a sliding context window.
-The exponential decay gamma weights recent tokens more heavily.
+        ℓ_Omega(M; t) = Σ(i=t-c+1 to t) γ_i^(t) * ||M(φ(k_i)) - v_i||²
 
-Reference:
-    - Atlas paper Eq. 9: Omega Rule loss formulation
-    - Atlas paper Appendix D: Key-Value projection definitions
+    Where:
+        M = memory module (deep neural network)
+        φ = polynomial feature map (increases capacity to O(d_k^p))
+        k_i, v_i = key-value pairs at position i
+        c = context window size
+        γ_i^(t) = decay_base^(t-i) gives exponential decay for older tokens
+
+Paper Context:
+    The Omega Rule is "strictly more powerful than the popular Delta learning
+    rule" (Section 3.2). Key advantages:
+
+    - "Measures the surprise of a local context window, meaning that it learns
+      how to memorize the (token) context at test time"
+    - Unlike Delta rule (c=1), optimizes over multiple past tokens
+    - Unlike global optimization (c=∞), maintains efficient constant-time gates
+
+    The paper calls this "Test Time Memorization" because it involves "storing
+    and retrieving information strictly within the global context, without
+    updating the model's core learned parameters."
+
+Implementation Notes:
+    - Memory input goes through polynomial features φ(k) internally
+    - Uses return_contribution=True to get raw memory output (no residual)
+    - Gradients flow through memory parameters for TTL update
+    - Context window limits computational cost to O(c) per position
 """
 
 from typing import TYPE_CHECKING

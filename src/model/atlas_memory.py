@@ -1,21 +1,44 @@
 """
-Atlas Memory Module: Gated MLP with Polynomial Features for Test-Time Memorization.
+Atlas Memory Module: Deep Neural Memory with Polynomial Features.
 
-The Atlas memory learns to store and retrieve information through a
-gated MLP architecture with polynomial feature expansion. Unlike attention,
-it can update its internal state at inference time, enabling true test-time learning.
+Paper Reference:
+    Atlas: Learning to Optimally Memorize the Context at Test Time
+    arXiv:2505.23735, Section 3.1 "Associative Memory with Super Linear Capacity"
 
-Architecture:
+Theoretical Foundation:
+    The paper establishes memory capacity bounds for different architectures:
+
+    Proposition 1 (Matrix Memory Capacity):
+        Matrix-valued memory M ∈ R^(d_v × d_k) with ℓ₂ attentional bias
+        can store at most O(d_k) key-value pairs with linearly independent keys.
+
+    Theorem 1 (Deep Memory Capacity):
+        An MLP with L_M ≥ 2 layers, d_k input dim, and d_h hidden dim
+        can store O(d_k * d_v) to O(d_k * d_v * Π min{d_h^(j)}) pairs.
+
+    Proposition 2 (Polynomial Feature Enhancement):
+        Using polynomial kernel φ_p on keys increases capacity to O(d_k^p).
+        For degree p=2: capacity increases from O(64) to O(4096) associations.
+
+Architecture (Section 4 "DeepTransformers"):
     1. Project input to key_dim for polynomial expansion
-    2. Apply polynomial features: [x, x_i*x_j] for O(d_k²) capacity
+    2. Apply polynomial features: φ(x) = [x, x_i*x_j] for O(d_k²) capacity
     3. Gated MLP: W1 · (σ(W2·φ(x)) ⊙ W3·φ(x))
     4. Project back to full dimension
 
-Memory capacity (Atlas Propositions 1 & 2):
-    - Without φ: O(d_k) ≈ 64 associations
-    - With φ_2: O(d_k²) ≈ 4,096 associations
+    The gated MLP acts as the "deep non-linear neural memory that encodes
+    past abstractions into its parameters" (Section 2).
 
-Reference: Atlas paper (arXiv:2505.23735)
+Test-Time Learning (TTL):
+    Unlike attention, this memory module supports parameter updates at inference
+    time via gradient descent with momentum (the "inner loop" optimization).
+    This enables "test time memorization" - storing and retrieving information
+    strictly within the context without modifying core learned parameters.
+
+Implementation Notes:
+    - Momentum buffers are registered as persistent buffers for TTL updates
+    - freeze_static_weights() allows testing TTL contribution in isolation
+    - poly_rank enables optional low-rank compression of polynomial features
 """
 
 from typing import cast
