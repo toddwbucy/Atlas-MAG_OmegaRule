@@ -191,6 +191,7 @@ poetry run pytest tests/test_ttl.py -v     # TTL/Omega tests
 
 - **Atlas Paper**: [arXiv:2505.23735](https://arxiv.org/abs/2505.23735) - Atlas: Learning to Optimally Memorize the Context at Test Time
 - **Titans Paper**: [arXiv:2501.00663](https://arxiv.org/abs/2501.00663) - Titans: Learning to Memorize at Test Time
+- **SwiGLU Paper**: [arXiv:2002.05202](https://arxiv.org/abs/2002.05202) - GLU Variants Improve Transformer (Shazeer, 2020)
 - **SmolLM-Corpus**: [HuggingFace](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
 
 ## License

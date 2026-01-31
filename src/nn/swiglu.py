@@ -1,10 +1,29 @@
 """
 SwiGLU: Swish-Gated Linear Unit.
 
-The gated activation used in modern transformers (LLaMA, PaLM, Atlas).
-Combines the SiLU (Swish) activation with a gating mechanism.
+Paper Reference:
+    GLU Variants Improve Transformer
+    arXiv:2002.05202 (Shazeer, 2020)
 
-Reference: https://arxiv.org/abs/2002.05202
+Usage in Atlas-MAG:
+    SwiGLU is used for the feedforward network (FFN) after the attention/memory
+    gating stage in each MAGBlock. This is a standard architectural choice used
+    in modern transformers (LLaMA, PaLM, Mistral).
+
+    Note: The Atlas paper (arXiv:2505.23735) specifies GELU for the *memory MLP*
+    (which we follow in atlas_memory.py), but does not prescribe an activation
+    for the main transformer FFN. SwiGLU is used here as a performant default.
+
+Mathematical Formulation:
+    SwiGLU(x) = W3(SiLU(W1(x)) ⊙ W2(x))
+
+    Where:
+    - SiLU(x) = x * sigmoid(x) (also called Swish)
+    - ⊙ denotes element-wise multiplication
+    - W1, W2 project to hidden_dim, W3 projects back to dim
+
+    The hidden dimension is scaled by 2/3 to maintain parameter parity
+    with a standard 2-layer FFN when using 3 weight matrices.
 """
 
 import torch.nn as nn
