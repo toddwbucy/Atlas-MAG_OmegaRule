@@ -1,37 +1,48 @@
 # Atlas-MAG with Omega Rule
 
-A hybrid sequence model combining **Sliding Window Attention (SWA)** with **Deep Neural Long-Term Memory**, implementing the **Omega Rule** from the Atlas paper for context-aware memorization.
+A hybrid sequence model combining **Sliding Window Attention (SWA)** with **Deep Neural Long-Term Memory**, implementing the **Omega Rule** from the Atlas paper ([arXiv:2505.23735](https://arxiv.org/abs/2505.23735)).
+
+## Paper Reference
+
+> **Atlas: Learning to Optimally Memorize the Context at Test Time**
+> arXiv:2505.23735
+
+This implementation aims to be a faithful reproduction of the Atlas paper, serving as a "boundary object" between the mathematical formalism and operational code. Each module includes detailed paper references with equation numbers and section citations.
 
 ## Overview
 
-Atlas-MAG is a proof-of-concept implementation exploring a novel approach to sequence modeling:
+Atlas-MAG combines the efficiency of local attention with the long-range associative memory of deep neural networks:
 
 ```
-Input → [Persistent Memory Tokens] → ┬→ [Sliding Window Attention] ─┐
-                                     │                              │
-                                     └→ [Neural Memory (Omega)] ────┤
-                                              ↓                      │
-                                         [Gate σ()]                  │
-                                              ↓                      │
-                                     output = SWA × σ(Memory) ←─────┘
+Input → Embedding → [MAGBlock × N] → RMSNorm → LM Head → Output
+
+MAGBlock:
+    ┌─────────────────────────────────────────────────────────┐
+    │  x ──┬──→ [Sliding Window Attention] ──→ attn_out       │
+    │      │                                       │          │
+    │      └──→ [Deep Polynomial Memory] ──→ mem_out          │
+    │                                              │          │
+    │      output = x + attn_out × sigmoid(mem_out) ←─────────│
+    └─────────────────────────────────────────────────────────┘
 ```
 
-### Key Features
+### Key Features from the Atlas Paper
 
-- **Omega Rule Memory**: Sliding context window with exponential decay for efficient long-range dependencies
-- **Input-Dependent Gates**: Per-position γ gates that modulate memory decay based on content relevance
-- **Gate Polarization**: Training objective that pushes gates toward 0 or 1 for interpretable memory/attention routing
-- **Persistent Memory**: Precomputed M_persistent provides stable long-term memory accessible from first token
+| Feature | Paper Section | Description |
+|---------|---------------|-------------|
+| **Omega Rule** | Section 3.2, Eq. 9 | Context-aware memory update over sliding window |
+| **Polynomial Features** | Section 3.1, Props 1-2 | Increases memory capacity from O(d_k) to O(d_k²) |
+| **MAG Architecture** | Section 4, 5.1 | Memory-as-Gate: memory output gates attention |
+| **TTL (Test-Time Learning)** | Section 3.2 | Inner-loop optimization of memory at inference |
+| **Newton-Schulz (Muon)** | Table 1 | Orthogonalization for stable momentum updates |
+| **Input-Dependent γ Gates** | Section 3.2 | Per-position decay for context pruning |
 
-### Architecture Highlights
+### Memory Capacity (Propositions 1 & 2)
 
-| Component | Description |
-|-----------|-------------|
-| Q-K Memory Projection | Projects queries through accumulated key space with proper normalization |
-| Causal Context Window | Only attends to past positions within configurable window (default: 256) |
-| Exponential Decay | Recent tokens weighted more heavily (decay_base=0.95) |
-| RMSNorm + SwiGLU | Modern transformer building blocks |
-| Rotary Embeddings | Position encoding for attention |
+| Configuration | Capacity | Associations per Layer |
+|---------------|----------|------------------------|
+| Matrix memory (no φ) | O(d_k) | ~64 |
+| With polynomial φ_2 | O(d_k²) | ~4,096 |
 
 ## Installation
 
@@ -42,9 +53,6 @@ cd Atlas-MAG_OmegaRule
 
 # Install dependencies with Poetry
 poetry install
-
-# Download tokenizer (uses HuggingFace SmolLM tokenizer)
-# The tokenizer is created automatically on first run if not present
 ```
 
 ### Requirements
@@ -56,59 +64,42 @@ poetry install
 
 ## Quick Start
 
-### Training a Model
+### Training
 
 ```bash
-# Train a 54M parameter model (Chinchilla-optimal: ~1B tokens)
-poetry run python scripts/train_smollm.py \
+# Train a 44M parameter model
+poetry run python scripts/train.py \
     --dim 512 \
     --layers 6 \
     --heads 8 \
-    --output-dir runs/atlas_54m \
-    --batch-size 8 \
+    --output-dir runs/atlas_44m \
+    --batch-size 24 \
     --gradient-accumulation-steps 4 \
-    --max-steps 61000
+    --max-steps 11000
 
 # Ablation: Train without memory (attention-only baseline)
-poetry run python scripts/train_smollm.py \
-    --dim 512 \
-    --layers 6 \
-    --heads 8 \
-    --output-dir runs/atlas_54m_no_memory \
-    --batch-size 8 \
-    --gradient-accumulation-steps 4 \
-    --max-steps 61000 \
-    --disable-memory
+poetry run python scripts/train.py \
+    --disable-memory \
+    --output-dir runs/atlas_44m_ablation
+```
+
+### Concurrent Evaluation
+
+```bash
+# Run eval worker on separate GPU (watches for checkpoints)
+poetry run python scripts/eval_worker.py \
+    --checkpoint-dir runs/atlas_44m \
+    --device cuda:1
 ```
 
 ### Model Configurations
 
-| Config | Params | dim | layers | heads | Chinchilla Tokens |
-|--------|--------|-----|--------|-------|-------------------|
-| Tiny | 33.7M | 384 | 6 | 6 | ~675M |
-| Small | 54.4M | 512 | 6 | 8 | ~1.1B |
-| Medium | 67.0M | 512 | 8 | 8 | ~1.3B |
-| Base | 195.1M | 768 | 12 | 12 | ~3.9B |
-
-### Inference
-
-```bash
-# Test a trained checkpoint
-poetry run python scripts/quick_inference.py \
-    --model runs/atlas_54m/best_model.pt \
-    --prompt "The quick brown fox" \
-    --max-tokens 100
-```
-
-## Training Data
-
-This implementation uses the [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus) with weighted sampling:
-
-| Subset | Weight | Description |
-|--------|--------|-------------|
-| cosmopedia-v2 | 40% | Synthetic textbooks and educational content |
-| fineweb-edu-dedup | 50% | High-quality web text |
-| python-edu-cleaned | 10% | Python code with educational comments |
+| Config | Params | dim | layers | heads |
+|--------|--------|-----|--------|-------|
+| Tiny | 33.7M | 384 | 6 | 6 |
+| Small | 44.1M | 512 | 6 | 8 |
+| Medium | 67.0M | 512 | 8 | 8 |
+| Base | 195.1M | 768 | 12 | 12 |
 
 ## Project Structure
 
@@ -116,66 +107,91 @@ This implementation uses the [SmolLM-Corpus](https://huggingface.co/datasets/Hug
 Atlas-MAG_OmegaRule/
 ├── src/
 │   ├── model/
-│   │   ├── skeleton.py          # Main model architecture
-│   │   ├── qk_projection.py     # Omega Rule Q-K memory projection
+│   │   ├── skeleton.py          # Full model assembly (Section 4)
+│   │   ├── blocks.py            # MAGBlock, AttentionOnlyBlock (Section 5.1)
+│   │   ├── atlas_memory.py      # Deep polynomial memory (Section 3.1)
+│   │   ├── qk_projection.py     # Omega Rule Q-K projection (Eq. 9)
 │   │   ├── persistent_memory.py # M_persistent computation
 │   │   └── projections.py       # QKV, rotary embeddings
-│   ├── data/
-│   │   ├── smollm_dataset.py    # SmolLM-Corpus data loading
-│   │   └── tokenizer.py         # BPE tokenizer wrapper
 │   ├── training/
-│   │   ├── polarization.py      # Gate polarization loss
-│   │   ├── niah_probe.py        # Needle-in-haystack retrieval tests
-│   │   └── telemetry.py         # Training metrics logging
+│   │   ├── ttl_update.py        # Test-Time Learning (Eq. 32-33)
+│   │   ├── omega_loss.py        # Omega Rule loss (Eq. 9)
+│   │   ├── niah_probe.py        # Needle-in-haystack memory probe
+│   │   ├── validation.py        # Validation utilities
+│   │   └── checkpoint.py        # Checkpoint management
+│   ├── data/
+│   │   ├── smollm_dataset.py    # SmolLM-Corpus streaming
+│   │   └── tokenizer.py         # BPE tokenizer wrapper
 │   └── nn/
+│       ├── newton_schulz.py     # NS-5 orthogonalization (Table 1)
 │       ├── rmsnorm.py           # RMS normalization
 │       └── swiglu.py            # SwiGLU activation
 ├── scripts/
-│   ├── train_smollm.py          # Main training script
-│   ├── quick_inference.py       # Checkpoint testing
-│   └── analyze_checkpoint.py    # Checkpoint analysis tools
-├── tests/                       # Comprehensive test suite (200+ tests)
-└── docs/                        # Design documents and summaries
+│   ├── train.py                 # Main training script
+│   ├── eval_worker.py           # Async evaluation worker
+│   └── quick_inference.py       # Checkpoint testing
+├── tests/                       # Test suite (109 tests)
+└── reports/                     # Validation reports
 ```
 
 ## Key Equations
 
-### Omega Rule (Memory Update)
+### Omega Rule (Section 3.2, Equation 9)
+
+The Omega Rule optimizes memory over a sliding context window:
 
 ```
-M_t = M_persistent + Σ(i=t-c+1 to t) γ_i^(t) × (k_i ⊗ k_i)
+ℓ_Omega(M; t) = Σ(i=t-c+1 to t) γ_i^(t) × ||M(φ(k_i)) - v_i||²
+```
+
+For our outer-product memory implementation:
+```
+M_t = M_persistent + Σ(i=t-c+1 to t) γ^(t-i) × (k_i ⊗ k_i)
 q'_t = M_t @ q_t / norm_sum_t
 ```
 
 Where:
-- `c` = context window size
-- `γ_i^(t)` = decay_base^(t-i) × gate_i (input-dependent decay)
-- `norm_sum_t` = norm_persistent + Σ weighted ||k_i||²
+- `c` = context window size (default: 256)
+- `γ` = decay_base^(t-i) × gate_i (exponential decay with learned gates)
+- `φ` = polynomial feature map for increased capacity
 
-### Gate Polarization Loss
+### TTL Update (Section 3.2, Equations 32-33)
+
+Test-Time Learning uses gradient descent with momentum:
 
 ```
-L_polar = λ(t) × mean(1 - |2g - 1|)
+S_t = θ × S_{t-1} + ∇ℓ(M_{t-1}; k_t, v_t)    # Momentum accumulation
+M_t = α × M_{t-1} - η × NS-5(S_t)             # Memory update with Muon
 ```
 
-Maximum penalty at g=0.5, zero at g∈{0,1}. Encourages gates to commit to memory or attention.
+Where NS-5 is Newton-Schulz iteration with 5 steps for orthogonalization.
+
+## Training Data
+
+Uses [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus) with weighted sampling:
+
+| Subset | Weight | Description |
+|--------|--------|-------------|
+| cosmopedia-v2 | 40% | Synthetic textbooks |
+| fineweb-edu-dedup | 50% | High-quality web text |
+| python-edu-cleaned | 10% | Educational Python code |
 
 ## Testing
 
 ```bash
-# Run full test suite
+# Run full test suite (109 tests)
 poetry run pytest tests/ -v
 
-# Run specific test categories
-poetry run pytest tests/test_phase2.py -v  # Q-K projection tests
-poetry run pytest tests/test_smollm_dataset.py -v  # Data loading tests
+# Run specific test files
+poetry run pytest tests/test_phase0.py -v  # Core components
+poetry run pytest tests/test_ttl.py -v     # TTL/Omega tests
 ```
 
 ## References
 
-- **Atlas Paper**: [arXiv:2505.23735](https://arxiv.org/abs/2505.23735) - Deep Neural Long-Term Memory
+- **Atlas Paper**: [arXiv:2505.23735](https://arxiv.org/abs/2505.23735) - Atlas: Learning to Optimally Memorize the Context at Test Time
 - **Titans Paper**: [arXiv:2501.00663](https://arxiv.org/abs/2501.00663) - Titans: Learning to Memorize at Test Time
-- **SmolLM**: [HuggingFace SmolLM](https://huggingface.co/HuggingFaceTB/SmolLM-135M)
+- **SmolLM-Corpus**: [HuggingFace](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
 
 ## License
 
@@ -183,11 +199,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Status
 
-🔬 **Research/Proof-of-Concept** - This is an experimental implementation for architecture validation. Not intended for production use.
+**Active Development** - Paper-faithful implementation with comprehensive test coverage.
 
-### Current Training Runs
-
-- 54M model with memory (Chinchilla-optimal training)
-- 54M model without memory (ablation baseline)
-
-Results will be published after training completes.
+Training validation in progress. Results will be published upon completion.

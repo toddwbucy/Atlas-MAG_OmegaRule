@@ -87,5 +87,7 @@ docs/
 *.key
 credentials.json
 
-# Claude Code workflow preferences (proprietary)
+# Claude Code workflow preferences (local/proprietary)
 CLAUDE.md
+agents.md
+.claude/
