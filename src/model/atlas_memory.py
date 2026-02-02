@@ -23,7 +23,7 @@ Theoretical Foundation:
 Architecture (Section 4 "DeepTransformers"):
     1. Project input to key_dim for polynomial expansion
     2. Apply polynomial features: φ(x) = [x, x_i*x_j] for O(d_k²) capacity
-    3. Gated MLP: W1 · (σ(W2·φ(x)) ⊙ W3·φ(x))
+    3. GELU MLP: M(x) = x + W1(gelu(W2(phi(x))))
     4. Project back to full dimension
 
     The gated MLP acts as the "deep non-linear neural memory that encodes
@@ -130,10 +130,10 @@ class AtlasMemoryPoly(nn.Module):
             self.poly_compress = nn.Linear(self.poly_dim, poly_rank, bias=bias)
             mlp_input_dim = poly_rank
 
-        # Gated MLP operates on (compressed) poly features
+        # GELU MLP operates on (compressed) poly features
+        # Paper: M(x) = x + W1(gelu(W2(x))) (2-projection MLP)
         self.w1 = nn.Linear(self.hidden_dim, key_dim, bias=bias)  # Output key_dim
         self.w2 = nn.Linear(mlp_input_dim, self.hidden_dim, bias=bias)
-        self.w3 = nn.Linear(mlp_input_dim, self.hidden_dim, bias=bias)
 
         # Project key_dim → dim for output
         self.proj_up = nn.Linear(key_dim, dim, bias=bias)
@@ -208,9 +208,8 @@ class AtlasMemoryPoly(nn.Module):
         # Standard initialization for all layers (LayerNorm handles input scaling)
         nn.init.normal_(self.w1.weight, std=0.02)
         nn.init.normal_(self.w2.weight, std=0.02)
-        nn.init.normal_(self.w3.weight, std=0.02)
 
-        for module in [self.w1, self.w2, self.w3]:
+        for module in [self.w1, self.w2]:
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -273,13 +272,10 @@ class AtlasMemoryPoly(nn.Module):
         if self.poly_compress is not None:
             x_mlp_in = self.poly_compress(x_poly)
 
-        # Gate and value use (compressed) polynomial features
-        gate = F.gelu(self.w2(x_mlp_in))
-        value = self.w3(x_mlp_in)
-        gated = gate * value
-
-        # Memory output in key dimension
-        mem_key: Tensor = self.w1(gated)  # (batch, seq_len, key_dim)
+        # Simple GELU MLP per paper: M(x) = x + W1(gelu(W2(x)))
+        # No gating - paper specifies 2-projection MLP with GELU activation
+        hidden = F.gelu(self.w2(x_mlp_in))
+        mem_key: Tensor = self.w1(hidden)  # (batch, seq_len, key_dim)
 
         # Project back to full dimension, normalize, and scale to match attention magnitude
         # 1. proj_up: key_dim → dim

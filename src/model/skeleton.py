@@ -248,10 +248,10 @@ class AtlasMAGSkeleton(nn.Module):
             if not hasattr(block, "memory"):
                 continue
             mem = block.memory
+            # Paper-compliant 2-projection GELU MLP: M(x) = x + W1(gelu(W2(x)))
             memory_states.extend([
                 mem.w1.weight.flatten(),
                 mem.w2.weight.flatten(),
-                mem.w3.weight.flatten(),
             ])
             if hasattr(mem, "proj_down"):
                 memory_states.append(mem.proj_down.weight.flatten())
