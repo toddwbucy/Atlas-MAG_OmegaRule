@@ -63,8 +63,8 @@ from src.model.projections import QKVProjection, RotaryEmbedding
 from src.model.qk_projection import CausalQKMemoryProjection
 from src.nn.rmsnorm import RMSNorm
 from src.nn.swiglu import SwiGLU
-from src.training.omega_loss import compute_omega_loss
-from src.training.ttl_update import ttl_step
+from src.runtime.omega_loss import compute_omega_loss
+from src.runtime.ttl_update import ttl_step
 
 logger = logging.getLogger(__name__)
 

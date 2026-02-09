@@ -1,10 +1,10 @@
-"""Training utilities for Atlas-MAG with Omega Rule."""
+"""Runtime utilities for Atlas-MAG with Omega Rule."""
 
-from src.training.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
-from src.training.niah_probe import NIAHProbe, NIAHResult
-from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
-from src.training.ttl_update import TTLUpdater, ttl_step, ttl_step_with_grad_clip
-from src.training.validation import run_validation
+from src.runtime.checkpoint import CheckpointManager, CheckpointMetadata, verify_rollback_trigger
+from src.runtime.niah_probe import NIAHProbe, NIAHResult
+from src.runtime.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
+from src.runtime.ttl_update import TTLUpdater, ttl_step, ttl_step_with_grad_clip
+from src.runtime.validation import run_validation
 
 __all__ = [  # noqa: RUF022 - grouped by feature on purpose
     # Omega Loss

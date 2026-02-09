@@ -35,9 +35,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.data.smollm_dataset import create_smollm_val_dataloader
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
-from src.training.niah_probe import NIAHProbe
-# DEADCODE: from src.training.polarization import compute_gate_statistics
-from src.training.validation import run_validation
+from src.runtime.niah_probe import NIAHProbe
+# DEADCODE: from src.runtime.polarization import compute_gate_statistics
+from src.runtime.validation import run_validation
 
 logger = logging.getLogger(__name__)
 
