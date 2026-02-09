@@ -407,38 +407,11 @@ class TestTTLInForwardPass:
         assert not torch.all(momentum == 0)
 
         # Reset
-        model.reset_ttl_momentum()
+        model._reset_ttl_momentum()
 
         # Check momentum is zero
         momentum = first_block.memory.get_momentum("w1.weight")
         assert torch.all(momentum == 0)
-
-    def test_model_set_ttl_enabled(self):
-        """Should be able to toggle TTL at runtime."""
-        model = AtlasMAGSkeleton(
-            vocab_size=1000,
-            dim=128,
-            n_layers=2,
-            n_heads=4,
-            ttl_enabled=True,
-        )
-
-        # Disable TTL
-        model.set_ttl_enabled(False)
-
-        input_ids = torch.randint(0, 1000, (2, 64))
-        _, ttl_stats_list = model(input_ids, return_ttl_stats=True)
-
-        # Should have no TTL stats when disabled
-        assert len(ttl_stats_list) == 0
-
-        # Re-enable TTL
-        model.set_ttl_enabled(True)
-
-        _, ttl_stats_list = model(input_ids, return_ttl_stats=True)
-
-        # Should have TTL stats when enabled
-        assert len(ttl_stats_list) == 2
 
     def test_ttl_runs_regardless_of_mode(self):
         """TTL runs in both train and non-train mode — NL has no mode distinction (CS-10)."""
