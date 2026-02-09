@@ -242,7 +242,7 @@ class MAGBlock(nn.Module):
             q_mem_flat = q_mem.transpose(1, 2).contiguous().view(batch, seq_len, dim)
 
             # TTL Update
-            if self.ttl_enabled and self.training:
+            if self.ttl_enabled:
                 v_flat = v.transpose(1, 2).contiguous().view(batch, seq_len, dim)
                 gamma_ttl = self.gamma_gate(h)
 
