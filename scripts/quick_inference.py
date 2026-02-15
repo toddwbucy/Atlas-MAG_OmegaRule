@@ -25,6 +25,14 @@ def load_model(model_path: str, device: str):
         n_layers=config.get("n_layers", 12),
         n_heads=config.get("n_heads", 12),
         disable_memory=config.get("disable_memory", False),
+        poly_degree=config.get("poly_degree", 2),
+        poly_rank=config.get("poly_rank", 512),
+        ttl_enabled=config.get("ttl_enabled", True),
+        ttl_theta=config.get("ttl_theta", 0.9),
+        ttl_alpha=config.get("ttl_alpha", 0.999),
+        ttl_eta=config.get("ttl_eta", 0.01),
+        ttl_ns_iters=config.get("ttl_ns_iters", 5),
+        ttl_adaptive_eta=config.get("ttl_adaptive_eta", False),
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
