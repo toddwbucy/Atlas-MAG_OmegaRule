@@ -187,13 +187,13 @@ class TestAtlasMAGSkeleton:
         logits = model(input_ids)
         assert logits.shape == (2, 32, 1000)
 
-    def test_forward_memory_only(self):
-        """forward_memory_only should return logits and memory state."""
+    def test_forward_with_ttl_stats(self):
+        """forward(return_ttl_stats=True) should return logits and TTL stats."""
         model = AtlasMAGSkeleton(vocab_size=1000, dim=D, n_layers=2, n_heads=8)
         input_ids = torch.randint(0, 1000, (2, 32))
-        logits, mem_state = model.forward_memory_only(input_ids)
+        logits, ttl_stats = model(input_ids, return_ttl_stats=True)
         assert logits.shape == (2, 32, 1000)
-        assert mem_state.dim() == 1  # Flattened memory state
+        assert isinstance(ttl_stats, list)
 
     def test_parameter_count(self):
         """Model should have expected parameter count."""

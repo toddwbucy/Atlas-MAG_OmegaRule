@@ -14,8 +14,8 @@ import torch.nn as nn
 from src.model.atlas_memory import AtlasMemoryPoly
 from src.model.blocks import MAGBlock as AtlasMAGBlock
 from src.model.skeleton import AtlasMAGSkeleton
-from src.training.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
-from src.training.ttl_update import TTLUpdater, ttl_step, ttl_step_with_grad_clip
+from src.runtime.omega_loss import compute_omega_loss, compute_omega_loss_with_stats
+from src.runtime.ttl_update import TTLUpdater, ttl_step, ttl_step_with_grad_clip
 
 
 class TestOmegaLoss:
@@ -407,41 +407,14 @@ class TestTTLInForwardPass:
         assert not torch.all(momentum == 0)
 
         # Reset
-        model.reset_ttl_momentum()
+        model._reset_ttl_momentum()
 
         # Check momentum is zero
         momentum = first_block.memory.get_momentum("w1.weight")
         assert torch.all(momentum == 0)
 
-    def test_model_set_ttl_enabled(self):
-        """Should be able to toggle TTL at runtime."""
-        model = AtlasMAGSkeleton(
-            vocab_size=1000,
-            dim=128,
-            n_layers=2,
-            n_heads=4,
-            ttl_enabled=True,
-        )
-
-        # Disable TTL
-        model.set_ttl_enabled(False)
-
-        input_ids = torch.randint(0, 1000, (2, 64))
-        _, ttl_stats_list = model(input_ids, return_ttl_stats=True)
-
-        # Should have no TTL stats when disabled
-        assert len(ttl_stats_list) == 0
-
-        # Re-enable TTL
-        model.set_ttl_enabled(True)
-
-        _, ttl_stats_list = model(input_ids, return_ttl_stats=True)
-
-        # Should have TTL stats when enabled
-        assert len(ttl_stats_list) == 2
-
-    def test_ttl_training_vs_inference_mode(self):
-        """TTL updates in train mode but is disabled in inference mode."""
+    def test_ttl_runs_regardless_of_mode(self):
+        """TTL runs in both train and non-train mode — NL has no mode distinction (CS-10)."""
         model = AtlasMAGSkeleton(
             vocab_size=1000,
             dim=128,
@@ -456,19 +429,15 @@ class TestTTLInForwardPass:
         model.train()
         initial_w1_train = model.blocks[0].memory.w1.weight.clone()
         _, ttl_stats_train = model(input_ids, return_ttl_stats=True)
-
-        # TTL should update params in train mode
         assert len(ttl_stats_train) == 2
         assert not torch.allclose(model.blocks[0].memory.w1.weight, initial_w1_train)
 
-        # Inference mode - TTL is disabled (training=False gates TTL in this implementation)
-        model.train(False)  # Set to inference mode
-        initial_w1_inference = model.blocks[0].memory.w1.weight.clone()
-        _, ttl_stats_inference = model(input_ids, return_ttl_stats=True)
-
-        # TTL should NOT update params in inference mode (training=False gates it)
-        assert len(ttl_stats_inference) == 0  # No TTL stats in inference mode
-        assert torch.allclose(model.blocks[0].memory.w1.weight, initial_w1_inference)
+        # Non-train mode — TTL should STILL run (no mode distinction)
+        model.train(False)
+        initial_w1_nontrain = model.blocks[0].memory.w1.weight.clone()
+        _, ttl_stats_nontrain = model(input_ids, return_ttl_stats=True)
+        assert len(ttl_stats_nontrain) == 2  # TTL stats in both modes
+        assert not torch.allclose(model.blocks[0].memory.w1.weight, initial_w1_nontrain)
 
     def test_ttl_stats_structure(self):
         """TTL stats should have expected structure."""

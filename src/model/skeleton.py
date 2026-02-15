@@ -235,62 +235,11 @@ class AtlasMAGSkeleton(nn.Module):
             return logits, ttl_stats_list
         return logits
 
-    def forward_memory_only(self, input_ids: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Forward pass that also returns memory state for W_init calibration.
-        """
-        result = self.forward(input_ids, return_ttl_stats=False)
-        logits = result if isinstance(result, Tensor) else result[0]
-
-        # Collect memory module states
-        memory_states: list[Tensor] = []
-        for block in self.blocks:
-            if not hasattr(block, "memory"):
-                continue
-            mem = block.memory
-            # Paper-compliant 2-projection GELU MLP: M(x) = x + W1(gelu(W2(x)))
-            memory_states.extend([
-                mem.w1.weight.flatten(),
-                mem.w2.weight.flatten(),
-            ])
-            if hasattr(mem, "proj_down"):
-                memory_states.append(mem.proj_down.weight.flatten())
-            if hasattr(mem, "proj_up"):
-                memory_states.append(mem.proj_up.weight.flatten())
-            if hasattr(mem, "poly_compress") and mem.poly_compress is not None:
-                memory_states.append(mem.poly_compress.weight.flatten())
-
-        if memory_states:
-            memory_state = torch.cat(memory_states)
-        else:
-            # Fallback: match device/dtype of logits to avoid downstream mismatches
-            memory_state = torch.zeros(1, device=logits.device, dtype=logits.dtype)
-        return logits, memory_state
-
-    def get_gate_values(self) -> list[float]:
-        """
-        Get gate values from all MAG blocks for monitoring.
-
-        MAG blocks use sigmoid(memory_gate) for gating.
-        """
-        gate_values: list[float] = []
-        for block in self.blocks:
-            if hasattr(block, "memory_gate"):
-                gate_values.append(torch.sigmoid(block.memory_gate).item())
-        return gate_values
-
     def reset_ttl_momentum(self) -> None:
         """Reset TTL momentum buffers in all layers."""
         for block in self.blocks:
             if hasattr(block, "memory") and hasattr(block.memory, "reset_momentum"):
                 block.memory.reset_momentum()
-
-    def set_ttl_enabled(self, enabled: bool) -> None:
-        """Enable or disable TTL for all layers."""
-        self.ttl_enabled = enabled
-        for block in self.blocks:
-            if hasattr(block, "ttl_enabled"):
-                block.ttl_enabled = enabled
 
     def count_parameters(self) -> dict:
         """Count parameters by component."""

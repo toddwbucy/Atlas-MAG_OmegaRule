@@ -45,8 +45,8 @@ from src.data.smollm_dataset import create_smollm_dataloader
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
 # DEADCODE: MAGBlock has no explicit gate params, these produce meaningless output
-# from src.training.gate_monitor import GateMonitor
-# from src.training.polarization import compute_gate_statistics
+# from src.runtime.gate_monitor import GateMonitor
+# from src.runtime.polarization import compute_gate_statistics
 from src.utils.logging import get_logger, setup_logging
 
 # Logger will be configured in main() after parsing args
