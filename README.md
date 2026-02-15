@@ -1,103 +1,94 @@
 # Atlas-MAG with Omega Rule
 
-A hybrid sequence model combining **Sliding Window Attention (SWA)** with **Deep Neural Long-Term Memory**, implementing the **Omega Rule** from the Atlas paper ([arXiv:2505.23735](https://arxiv.org/abs/2505.23735)).
-
-## Paper Reference
+An implementation of the **Atlas** paper's Memory-As-Gate (MAG) architecture with polynomial memory, test-time learning (TTL), and the Omega Rule.
 
 > **Atlas: Learning to Optimally Memorize the Context at Test Time**
-> arXiv:2505.23735
+> Behrouz, Li, Kacham, Daliri, Deng, Zhong, Razaviyayn, Mirrokni (Google Research)
+> [arXiv:2505.23735](https://arxiv.org/abs/2505.23735)
 
-This implementation aims to be a faithful reproduction of the Atlas paper, serving as a "boundary object" between the mathematical formalism and operational code. Each module includes detailed paper references with equation numbers and section citations.
+**Checkpoint**: [r3d91ll/Atlas-MAG_OmegaRule on HuggingFace](https://huggingface.co/r3d91ll/Atlas-MAG_OmegaRule)
 
-## Overview
+## The Infrastructure Problem
 
-Atlas-MAG combines the efficiency of local attention with the long-range associative memory of deep neural networks:
+This model demonstrates a fundamental gap between how Nested Learning models are *designed* to run and how existing infrastructure *allows* them to run.
+
+Atlas-MAG uses **test-time learning (TTL)**: during the forward pass, the model's memory updates itself via gradient descent. This is not training — it is how the model processes context. But PyTorch gates the TTL inner loop behind `if self.training`, and every serving framework (vLLM, TGI, TensorRT-LLM) sets models to inference mode before serving.
+
+The result: the model's memory architecture is silenced at serve time.
+
+Two scripts let you see this for yourself:
+
+### Demo: The Train-Flag Problem
+
+```bash
+# Auto-downloads the 473MB checkpoint from HuggingFace
+pip install huggingface_hub
+python scripts/demo_ttl_inference.py
+```
+
+Runs the same model with the same weights on the same input twice — once with TTL silenced (inference mode), once with TTL active (training mode). You'll see different outputs from identical weights.
+
+### Benchmark: NIAH Memory Probe
+
+```bash
+python scripts/benchmark_niah.py
+```
+
+Measures memory contribution at positions beyond the sliding window attention range under three conditions:
+
+| Condition | What It Is | What It Represents |
+|-----------|-----------|-------------------|
+| **Attention Only** | Memory disabled | Baseline |
+| **TTL OFF** | Memory exists, is static | What serving frameworks give you |
+| **TTL ON** | Memory adapts during forward pass | How the model was designed |
+
+The gap between TTL OFF and TTL ON is what inference mode costs you.
+
+## Model
+
+| | |
+|---|---|
+| **Parameters** | 43M (dim=512, 6 layers, 8 heads) |
+| **Memory** | Polynomial degree-2, rank-512 |
+| **TTL** | Muon optimizer (Newton-Schulz 5-iter), momentum=0.9 |
+| **Training Data** | SmolLM-Corpus (cosmopedia 40%, fineweb-edu 50%, python-edu 10%) |
+| **Training** | 8,800 steps on dual A6000 48GB |
+| **NIAH Accuracy** | 85.9% (memory contribution at beyond-window positions) |
+
+## Architecture
 
 ```
-Input → Embedding → [MAGBlock × N] → RMSNorm → LM Head → Output
+Input -> Embedding -> [MAGBlock x 6] -> RMSNorm -> LM Head -> Output
 
 MAGBlock:
-    ┌─────────────────────────────────────────────────────────┐
-    │  x ──┬──→ [Sliding Window Attention] ──→ attn_out       │
-    │      │                                       │          │
-    │      └──→ [Deep Polynomial Memory] ──→ mem_out          │
-    │                                              │          │
-    │      output = x + attn_out × sigmoid(mem_out) ←─────────│
-    └─────────────────────────────────────────────────────────┘
+    x --+--> [Sliding Window Attention] --> attn_out
+        |                                      |
+        +--> [Deep Polynomial Memory]  --> mem_out
+                                               |
+        output = x + attn_out * sigmoid(mem_out)
 ```
 
-### Key Features from the Atlas Paper
+Each MAGBlock combines local attention (window=512) with a polynomial memory module. The memory output *gates* the attention output, controlling how much attention contributes at each position.
 
-| Feature | Paper Section | Description |
-|---------|---------------|-------------|
-| **Omega Rule** | Section 3.2, Eq. 9 | Context-aware memory update over sliding window |
-| **Polynomial Features** | Section 3.1, Props 1-2 | Increases memory capacity from O(d_k) to O(d_k²) |
-| **MAG Architecture** | Section 4, 5.1 | Memory-as-Gate: memory output gates attention |
-| **TTL (Test-Time Learning)** | Section 3.2 | Inner-loop optimization of memory at inference |
-| **Newton-Schulz (Muon)** | Table 1 | Orthogonalization for stable momentum updates |
-| **Input-Dependent γ Gates** | Section 3.2 | Per-position decay for context pruning |
-
-### Memory Capacity (Propositions 1 & 2)
-
-| Configuration | Capacity | Associations per Layer |
-|---------------|----------|------------------------|
-| Matrix memory (no φ) | O(d_k) | ~64 |
-| With polynomial φ_2 | O(d_k²) | ~4,096 |
+The polynomial feature map (Section 3.1, Props 1-2) increases memory capacity from O(d_k) to O(d_k^2) — roughly 64x more associations per layer.
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/toddwbucy/Atlas-MAG_OmegaRule.git
 cd Atlas-MAG_OmegaRule
+pip install torch huggingface_hub tokenizers
 
-# Install dependencies with Poetry
+# Run the demo (auto-downloads checkpoint)
+python scripts/demo_ttl_inference.py
+```
+
+For full development (training, tests):
+
+```bash
 poetry install
+poetry run pytest tests/ -v  # 109 tests
 ```
-
-### Requirements
-
-- Python 3.10+
-- PyTorch 2.0+
-- CUDA-capable GPU (tested on RTX A6000 48GB)
-- ~50GB disk space for SmolLM-Corpus subset
-
-## Quick Start
-
-### Training
-
-```bash
-# Train the 42.6M parameter model (Small config)
-poetry run python scripts/train.py \
-    --dim 512 \
-    --layers 6 \
-    --heads 8 \
-    --output-dir runs/atlas_42m \
-    --batch-size 24 \
-    --gradient-accumulation-steps 4 \
-    --max-steps 11000
-
-# Ablation: Train without memory (attention-only baseline)
-poetry run python scripts/train.py \
-    --disable-memory \
-    --output-dir runs/atlas_42m_ablation
-```
-
-### Concurrent Evaluation
-
-```bash
-# Run eval worker on separate GPU (watches for checkpoints)
-poetry run python scripts/eval_worker.py \
-    --checkpoint-dir runs/atlas_42m \
-    --device cuda:1
-```
-
-### Model Configurations
-
-| Config | Params | dim | layers | heads | Purpose |
-|--------|--------|-----|--------|-------|---------|
-| Small | 42.6M | 512 | 6 | 8 | Architecture validation |
-| Base | 124.7M | 768 | 12 | 12 | First real evaluation |
 
 ## Project Structure
 
@@ -105,100 +96,50 @@ poetry run python scripts/eval_worker.py \
 Atlas-MAG_OmegaRule/
 ├── src/
 │   ├── model/
-│   │   ├── skeleton.py          # Full model assembly (Section 4)
-│   │   ├── blocks.py            # MAGBlock, AttentionOnlyBlock (Section 5.1)
-│   │   ├── atlas_memory.py      # Deep polynomial memory (Section 3.1)
+│   │   ├── skeleton.py          # AtlasMAGSkeleton (Section 4)
+│   │   ├── blocks.py            # MAGBlock with gamma gates (Section 5.1)
+│   │   ├── atlas_memory.py      # Polynomial memory (Section 3.1)
 │   │   ├── qk_projection.py     # Omega Rule Q-K projection (Eq. 9)
 │   │   ├── persistent_memory.py # M_persistent computation
 │   │   └── projections.py       # QKV, rotary embeddings
-│   ├── training/
+│   ├── runtime/
 │   │   ├── ttl_update.py        # Test-Time Learning (Eq. 32-33)
 │   │   ├── omega_loss.py        # Omega Rule loss (Eq. 9)
 │   │   ├── niah_probe.py        # Needle-in-haystack memory probe
 │   │   ├── validation.py        # Validation utilities
 │   │   └── checkpoint.py        # Checkpoint management
-│   ├── data/
-│   │   ├── smollm_dataset.py    # SmolLM-Corpus streaming
-│   │   └── tokenizer.py         # BPE tokenizer wrapper
-│   ├── nn/
-│   │   ├── newton_schulz.py     # NS-5 orthogonalization (Table 1)
-│   │   ├── rmsnorm.py           # RMS normalization
-│   │   └── swiglu.py            # SwiGLU activation
-│   └── utils/
-│       └── logging.py           # Logging utilities
+│   ├── data/                    # SmolLM-Corpus streaming + tokenizer
+│   └── nn/                      # Newton-Schulz, RMSNorm
 ├── scripts/
-│   ├── train.py                 # Main training script
+│   ├── demo_ttl_inference.py    # Train-flag problem demo
+│   ├── benchmark_niah.py        # NIAH memory probe (TTL ON vs OFF)
+│   ├── train.py                 # Training script
 │   ├── eval_worker.py           # Async evaluation worker
-│   └── quick_inference.py       # Checkpoint testing
-└── tests/                       # Test suite (109 tests)
+│   └── quick_inference.py       # Quick text generation
+├── tests/                       # 109 tests
+├── ISSUES.md                    # NL graph compliance tracking
+└── LESSONS_LEARNED.md           # What we learned building this
 ```
 
 ## Key Equations
 
-### Omega Rule (Section 3.2, Equation 9)
-
-The Omega Rule optimizes memory over a sliding context window:
-
+**Omega Rule** (Section 3.2, Eq. 9) — memory update over sliding context window:
 ```
-ℓ_Omega(M; t) = Σ(i=t-c+1 to t) γ_i^(t) × ||M(φ(k_i)) - v_i||²
+l_Omega(M; t) = sum(i=t-c+1 to t) gamma_i^(t) * ||M(phi(k_i)) - v_i||^2
 ```
 
-For our outer-product memory implementation:
+**TTL Update** (Section 3.2, Eq. 32-33) — gradient descent with Muon momentum:
 ```
-M_t = M_persistent + Σ(i=t-c+1 to t) γ^(t-i) × (k_i ⊗ k_i)
-q'_t = M_t @ q_t / norm_sum_t
-```
-
-Where:
-- `c` = context window size (default: 256)
-- `γ` = decay_base^(t-i) × gate_i (exponential decay with learned gates)
-- `φ` = polynomial feature map for increased capacity
-
-### TTL Update (Section 3.2, Equations 32-33)
-
-Test-Time Learning uses gradient descent with momentum:
-
-```
-S_t = θ × S_{t-1} + ∇ℓ(M_{t-1}; k_t, v_t)    # Momentum accumulation
-M_t = α × M_{t-1} - η × NS-5(S_t)             # Memory update with Muon
-```
-
-Where NS-5 is Newton-Schulz iteration with 5 steps for orthogonalization.
-
-## Training Data
-
-Uses [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus) with weighted sampling:
-
-| Subset | Weight | Description |
-|--------|--------|-------------|
-| cosmopedia-v2 | 40% | Synthetic textbooks |
-| fineweb-edu-dedup | 50% | High-quality web text |
-| python-edu-cleaned | 10% | Educational Python code |
-
-## Testing
-
-```bash
-# Run full test suite (109 tests)
-poetry run pytest tests/ -v
-
-# Run specific test files
-poetry run pytest tests/test_phase0.py -v  # Core components
-poetry run pytest tests/test_ttl.py -v     # TTL/Omega tests
+S_t = theta * S_{t-1} + grad_l(M_{t-1}; k_t, v_t)   # Momentum
+M_t = alpha * M_{t-1} - eta * NS-5(S_t)              # Memory update
 ```
 
 ## References
 
-- **Atlas Paper**: [arXiv:2505.23735](https://arxiv.org/abs/2505.23735) - Atlas: Learning to Optimally Memorize the Context at Test Time
-- **Titans Paper**: [arXiv:2501.00663](https://arxiv.org/abs/2501.00663) - Titans: Learning to Memorize at Test Time
-- **SwiGLU Paper**: [arXiv:2002.05202](https://arxiv.org/abs/2002.05202) - GLU Variants Improve Transformer (Shazeer, 2020)
-- **SmolLM-Corpus**: [HuggingFace](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
+- [Atlas (arXiv:2505.23735)](https://arxiv.org/abs/2505.23735) — Learning to Optimally Memorize the Context at Test Time
+- [Titans (arXiv:2501.00663)](https://arxiv.org/abs/2501.00663) — Learning to Memorize at Test Time
+- [Nested Learning (arXiv:2512.24695)](https://arxiv.org/abs/2512.24695) — The capstone paper unifying the research program
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Status
-
-**Active Development** - Paper-faithful implementation with comprehensive test coverage.
-
-Training validation in progress. Results will be published upon completion.
+MIT

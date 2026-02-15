@@ -23,9 +23,9 @@ Paper: Atlas — Learning to Optimally Memorize the Context at Test Time
        arXiv:2505.23735 (Behrouz et al., 2025)
 
 Usage:
-    python scripts/benchmark_niah.py --checkpoint runs/atlas_54m_gelu/checkpoint_step008800.pt
-    python scripts/benchmark_niah.py --checkpoint path/to/ckpt --seq-lengths 512 1024 2048
-    python scripts/benchmark_niah.py --checkpoint path/to/ckpt --n-sequences 8 --device cuda:1
+    python scripts/benchmark_niah.py                                          # auto-downloads from HuggingFace
+    python scripts/benchmark_niah.py --seq-lengths 768 1024 2048              # custom lengths
+    python scripts/benchmark_niah.py --checkpoint path/to/ckpt --device cuda:1  # local checkpoint
 """
 
 import sys
@@ -46,6 +46,24 @@ import torch.nn.functional as F
 from src.config import WINDOW_SIZE
 from src.data.tokenizer import load_tokenizer
 from src.model.skeleton import AtlasMAGSkeleton
+
+HF_REPO = "r3d91ll/Atlas-MAG_OmegaRule"
+HF_CHECKPOINT = "checkpoint_step008800.pt"
+
+
+def download_from_hf(filename: str) -> str:
+    """Download a file from HuggingFace Hub, returning the cached path."""
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("ERROR: huggingface_hub not installed. Run: pip install huggingface_hub")
+        print("  Or provide --checkpoint path manually.")
+        sys.exit(1)
+
+    print(f"Downloading {filename} from {HF_REPO}...")
+    path = hf_hub_download(repo_id=HF_REPO, filename=filename)
+    print(f"  Cached at: {path}")
+    return path
 
 
 @dataclass
@@ -345,12 +363,12 @@ def main():
         description="NIAH benchmark: memory probe with TTL ON vs OFF comparison",
     )
     parser.add_argument(
-        "--checkpoint", required=True, help="Path to Atlas-MAG checkpoint (.pt file)"
+        "--checkpoint", default=None,
+        help="Path to checkpoint (.pt). If omitted, downloads from HuggingFace.",
     )
     parser.add_argument(
-        "--tokenizer",
-        default="data/tokenizer_smollm.json",
-        help="Path to tokenizer (default: data/tokenizer_smollm.json)",
+        "--tokenizer", default=None,
+        help="Path to tokenizer. If omitted, uses data/tokenizer_smollm.json or downloads.",
     )
     parser.add_argument(
         "--device", default="cuda:0", help="Device (default: cuda:0)"
@@ -385,10 +403,13 @@ def main():
     )
     args = parser.parse_args()
 
+    # --- Resolve paths ---
+    checkpoint_path = args.checkpoint or download_from_hf(HF_CHECKPOINT)
+
     print("=" * 70)
     print("Atlas-MAG: NIAH Memory Benchmark (TTL ON vs TTL OFF)")
     print("=" * 70)
-    print(f"Checkpoint    : {args.checkpoint}")
+    print(f"Checkpoint    : {checkpoint_path}")
     print(f"Device        : {args.device}")
     print(f"Window size   : {args.window_size}")
     print(f"Seq lengths   : {args.seq_lengths}")
@@ -396,7 +417,7 @@ def main():
     print(f"Seed          : {args.seed}")
     print()
 
-    model, config, param_count, vocab_size = load_model(args.checkpoint, args.device)
+    model, config, param_count, vocab_size = load_model(checkpoint_path, args.device)
 
     print(f"Model         : {param_count:.1f}M params, {config.get('n_layers', '?')} layers")
     print(f"Vocab         : {vocab_size}")
